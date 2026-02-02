@@ -1,5 +1,5 @@
 ===========================================================
-DASHBOARD FOR STOCHASTIC DER OPTIMIZATION & SIMULATION
+Stochastic Optimization Framework for VDER Integration
 ===========================================================
 
 1. OVERVIEW
