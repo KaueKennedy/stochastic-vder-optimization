@@ -1,0 +1,2 @@
+06/17/2019: Released the first version of the 240-bus time-series test system.
+10/16/2019: Changed the output format of line currents obtained through the Matlab-OpenDSS interface.

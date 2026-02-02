@@ -1,0 +1,15 @@
+docplex
+opendssdirect
+matplotlib
+networkx
+numpy
+openpyxl
+pandas
+plotly
+protobuf
+py_dss_interface
+Requests
+scikit_learn
+scipy
+sphinx_rtd_theme
+streamlit

@@ -1,0 +1,7 @@
+Topology analysis for switch control algorithms
+
+32 Levels Deep
+4 Loops
+0 Parallel PD elements
+0 Isolated PD components
+0 Controlled Switches
