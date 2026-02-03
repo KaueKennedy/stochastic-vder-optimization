@@ -1,0 +1,98 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'textColor': '#000', 'lineColor': '#000'}}}%%
+
+flowchart TD
+    
+    %% Nodes Definition
+    Start([Start of Simulation])
+    
+    %% Input Block
+    Config[/Parametric Configuration <br/> Streamlit Interface: Control Tabs <br/> ----------------------------- <br/> • Weights: ICAP, E, DRV, LSV <br/> • Physics: Vmin/max, Power Flow <br/> • Econ: CAPEX, LMP, Budgets <br/> • Limits: Penetration, Flows/]
+    
+    DataLoad[Load Input Data <br/> Iowa 240Bus Network, <br/> Solar/Wind/Load Profiles, LMP Prices]
+    
+    PreProc[Spatial & Social Pre-processing <br/> K-Means Clustering, <br/> Score Locational...]
+
+    %% Subgraph: Optimizer Module
+    subgraph OptimizerModule [Optimizer Module: Planning]
+        direction LR
+        MathModel[[Mathematical Model Construction <br/> Unified Objective Z + <br/> Physical Constraints]]
+        LinDist[[Network Linearization <br/> LinDistFlow Model]]
+        Solver[[Optimization Resolution <br/> CPLEX Engine]]
+        
+        MathModel --> LinDist --> Solver
+    end
+
+    %% Decision Point
+    OptimalCheck{Optimal <br/> Solution Found?}
+    
+    %% Error Path
+    ErrorDisp[Error Display <br/> Infeasible Solution]
+    
+    %% Success Path
+    ExtractDec[Extract Optimal Decisions <br/> Capacities kW, <br/> Battery Profiles, SoC]
+
+    %% Subgraph: Digital Simulation
+    subgraph DigitalTwin [OpenDSS Simulation: Validation]
+        direction LR
+        InjectDER[[DER Injection into Model <br/> PV/BESS Generators <br/> on Buses]]
+        PowerFlow[[Power Flow Execution <br/> OpenDSS Engine, <br/> Non-Linear]]
+        ExtractPhys[[Physical Results Extraction <br/> Actual Voltages, <br/> Losses, Currents]]
+        
+        InjectDER --> PowerFlow --> ExtractPhys
+    end
+
+    %% Post-Processing
+    Compare[Comparison & Validation <br/> Optimized V vs Real]
+    
+    KPIs[Performance Indicators Calculation <br/> Profitability $/kW, <br/> Penetration %, Social Focus]
+    
+    Archive[(Results Archiving <br/> Historical CSV File)]
+    
+    Viz[Interactive Visualization <br/> 3D Chart, Financial Flows, <br/> Profiles...]
+    
+    EndNode([End])
+
+    %% Connections / Flow
+    Start --> Config
+    Config --> DataLoad
+    DataLoad --> PreProc
+    PreProc --> OptimizerModule
+    
+    OptimizerModule --> OptimalCheck
+    
+    %% Decision Logic
+    OptimalCheck -- No --> ErrorDisp
+    ErrorDisp --> EndNode
+    
+    OptimalCheck -- Yes --> ExtractDec
+    ExtractDec --> DigitalTwin
+    
+    DigitalTwin --> Compare
+    Compare --> KPIs
+    KPIs --> Archive
+    Archive --> Viz
+    Viz --> EndNode
+
+    %% Styling (Optional - to match the professional look)
+    style Start fill:#d3d3d3,stroke:#333,stroke-width:2px
+    style Config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style DataLoad fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style PreProc fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    
+    style MathModel fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style LinDist fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style Solver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    
+    style OptimalCheck fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style ErrorDisp fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style ExtractDec fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    
+    style InjectDER fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style PowerFlow fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style ExtractPhys fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    
+    style Compare fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style KPIs fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style Archive fill:#f5f5f5,stroke:#666,stroke-width:2px,shape:cylinder
+    style Viz fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style EndNode fill:#d3d3d3,stroke:#333,stroke-width:2px

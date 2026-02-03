@@ -456,16 +456,19 @@ def main():
         cols_raw = [c for c in df.columns 
                     if 'Score_' not in c 
                     and c not in cols_factors 
-                    and c not in ['Sim_ID', 'Timestamp']
+                    and c not in ['Sim_ID', 'Timestamp', 'GLOBAL_PERFORMANCE_INDEX']
                     and df[c].dtype in ['float64', 'int64']]
         
         # Mantemos o GLOBAL_PERFORMANCE_INDEX pois ele é o resultado final importante
-        target_cols = sorted(cols_raw)
+        # Build pairs [Raw, Score, Raw, Score, ...]
+        target_cols = []
+        for raw_metric in cols_raw:
+            target_cols.append(raw_metric)           # Raw
+            score_name = f'Score_{raw_metric}'
+            if score_name in df.columns:
+                target_cols.append(score_name)       # Score pair
+        target_cols.append('GLOBAL_PERFORMANCE_INDEX')  # Global no final
 
-        special_col = 'GLOBAL_PERFORMANCE_INDEX'
-        if special_col in target_cols:
-            target_cols.remove(special_col)
-            target_cols.append(special_col)
         
         # Garante que as colunas existem na matriz de correlação
         valid_cols = [c for c in target_cols if c in corr.columns]
