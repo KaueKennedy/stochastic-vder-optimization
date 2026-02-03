@@ -17,6 +17,7 @@ set "PYTHON_EXE=%PROJECT_ROOT%%VENV_NAME%\Scripts\python.exe"
 :: Internal relative paths (do not change unless you move the script files)
 set "REQ_FILE=requirements.txt"
 set "DASH_FILE=code\dashboard_batch.py"
+set "CHARTS_FILE=code\visualizer.py"
 
 :: Set working directory to the folder where this .bat file is located
 cd /d "%~dp0"
@@ -63,12 +64,25 @@ echo Project Root: %cd%
 echo.
 
 :: Run the dashboard using the portable Python context
-"%PYTHON_EXE%" -m streamlit run "%DASH_FILE%"
+start /min "Dashboard Streamlit" "%PYTHON_EXE%" -m streamlit run "%DASH_FILE%"
 
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] The dashboard closed unexpectedly. Check the logs above.
+    timeout /t 12 /nobreak > nul
     pause
 )
 
-pause
+timeout /t 12 /nobreak > nul
+
+:: Run the Vizualizer using the portable Python context
+start /min "Visualizer Streamlit" "%PYTHON_EXE%" -m streamlit run "%CHARTS_FILE%"
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] The visualizer closed unexpectedly. Check the logs above.
+    pause
+)
+
+timeout /t 5 /nobreak > nul
+exit

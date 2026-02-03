@@ -1,4 +1,4 @@
-%%{init: {'theme': 'base', 'themeVariables': { 'textColor': '#000', 'lineColor': '#000'}}}%%
+%%{init: {'theme': 'default', 'themeVariables': { 'textColor': '#000', 'lineColor': '#000'}}}%%
 
 flowchart TD
     
@@ -32,7 +32,7 @@ flowchart TD
     ExtractDec[Extract Optimal Decisions <br/> Capacities kW, <br/> Battery Profiles, SoC]
 
     %% Subgraph: Digital Simulation
-    subgraph DigitalTwin [OpenDSS Simulation: Validation]
+    subgraph DigitalTwin [OpenDSS Simulation]
         direction LR
         InjectDER[[DER Injection into Model <br/> PV/BESS Generators <br/> on Buses]]
         PowerFlow[[Power Flow Execution <br/> OpenDSS Engine, <br/> Non-Linear]]
