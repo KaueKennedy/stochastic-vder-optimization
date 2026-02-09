@@ -1,88 +1,131 @@
 @echo off
 setlocal
-title DER Optimization Dashboard Launcher
+title DER Optimization Launcher
+
+:: Change to script directory (supports network/UNC paths)
+pushd "%~dp0"
 
 :: ==============================================================================
-:: USER CONFIGURATION - PLEASE READ
+:: CONFIGURATION
 :: ==============================================================================
-:: IMPORTANT: You must change the path below to match the location of your 
-:: Python executable. If you are using the portable version in Documents, 
-:: ensure the path below is correct.
-:: ==============================================================================
-set "PROJECT_ROOT=%~dp0"
 set "VENV_NAME=venv310"
-set "PYTHON_EXE=%PROJECT_ROOT%%VENV_NAME%\Scripts\python.exe"
-
-
-:: Internal relative paths (do not change unless you move the script files)
+set "PYTHON_EXE=venv310\python.exe"
 set "REQ_FILE=requirements.txt"
 set "DASH_FILE=code\dashboard_batch.py"
 set "CHARTS_FILE=code\visualizer.py"
-
-:: Set working directory to the folder where this .bat file is located
-cd /d "%~dp0"
+set "BROWSER_EXE=FirefoxPortable.exe"
 
 echo ======================================================
-echo       DER OPTIMIZATION SYSTEM - STARTUP
+echo       DER OPTIMIZATION SYSTEM
 echo ======================================================
 echo.
 
-:: Check if the Python executable exists at the specified path
-if not exist "%PYTHON_EXE%" (
-    echo [ERROR] Python not found at: %PYTHON_EXE%
-    echo.
-    echo Please open this .bat file in Notepad and update the 
-    echo PYTHON_EXE variable to point to your python.exe location.
-    echo.
+:: 1. CHECK FILES
+if not exist "%DASH_FILE%" (
+    echo [ERROR] Dashboard file not found: %DASH_FILE%
+    echo Please ensure the 'code' folder is next to this script.
     pause
     exit /b
 )
 
-:: Ask the user if they want to update dependencies
-echo The system is using the portable environment at: 
-echo %PYTHON_EXE%
+:: 2. CHECK PYTHON ENVIRONMENT
+if exist "%PYTHON_EXE%" goto :CHECK_DEPS
+
+echo [WARNING] Python environment not found.
+set /p install_opt="Install Portable Python now? (Y/N): "
+if /i not "%install_opt: =%"=="Y" exit /b
+
+:INSTALL_PYTHON
 echo.
-set /p install="Do you want to verify/install libraries from requirements.txt? (Y/N): "
+echo [1/6] Downloading Python 3.10...
+curl -L -o python_embed.zip "https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip"
 
-if /i "%install%"=="Y" (
-    echo.
-    echo [INFO] Activating environment and updating packages...
-    :: Running pip through the specific python.exe ensures the "venv" context
-    "%PYTHON_EXE%" -m pip install --upgrade pip
-    "%PYTHON_EXE%" -m pip install -r "%REQ_FILE%"
-    if %errorlevel% neq 0 (
-        echo [WARNING] There was an issue during installation. 
-        echo Check your internet connection or file permissions.
-    )
-) else (
-    echo [INFO] Skipping installation. Starting with current libraries.
-)
+echo [2/6] Extracting Python...
+if exist "%VENV_NAME%" rmdir /s /q "%VENV_NAME%"
+powershell -Command "Expand-Archive -Path python_embed.zip -DestinationPath %VENV_NAME%"
+del python_embed.zip
+
+echo [3/6] Configuring Python...
+echo import site>> "%VENV_NAME%\python310._pth"
+
+echo [4/6] Installing PIP...
+curl -L -o get-pip.py "https://bootstrap.pypa.io/get-pip.py"
+"%PYTHON_EXE%" get-pip.py
+del get-pip.py
+
+echo [5/6] Installing base tools...
+"%PYTHON_EXE%" -m pip install --no-warn-script-location wheel setuptools
+
+echo [6/6] Downloading Firefox Portable...
+curl -L -o firefox.zip "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=en-US"
+powershell -Command "Expand-Archive -Path firefox.zip -DestinationPath browser_temp"
+copy "browser_temp\firefox.exe" "%BROWSER_EXE%"
+rmdir /s /q browser_temp 2>nul
+del firefox.zip
+
+echo [SUCCESS] Python + Firefox Portable ready!
+set "FRESH_INSTALL=1"
+
+:CHECK_DEPS
+:: Add venv to local PATH
+set "PATH=%~dp0%VENV_NAME%;%~dp0%VENV_NAME%\Scripts;%PATH%"
+
+:: --- CONFIGURE STREAMLIT TO SKIP EMAIL ---
+if not exist "%UserProfile%\.streamlit" mkdir "%UserProfile%\.streamlit"
+(
+echo [general]
+echo email = ""
+echo [browser]
+echo gatherUsageStats = false
+) > "%UserProfile%\.streamlit\config.toml"
+
+if "%FRESH_INSTALL%"=="1" goto :INSTALL_REQS
 
 echo.
-echo [INFO] Launching Streamlit Dashboard...
-echo Project Root: %cd%
+set /p check="Check requirements.txt? (Y/N): "
+if /i "%check: =%"=="Y" goto :INSTALL_REQS
+goto :RUN_APPS
+
+:INSTALL_REQS
+echo [INFO] Installing libraries...
+"%PYTHON_EXE%" -m pip install --upgrade pip
+"%PYTHON_EXE%" -m pip install --prefer-binary -r "%REQ_FILE%"
+
+:RUN_APPS
 echo.
+echo [INFO] Starting applications...
 
-:: Run the dashboard using the portable Python context
-start /min "Dashboard Streamlit" "%PYTHON_EXE%" -m streamlit run "%DASH_FILE%"
+:: Start Dashboard (fixed port 8501)
+start "Dashboard" /D "." cmd /k "venv310\python.exe -m streamlit run code\dashboard_batch.py --server.port 8501 --server.headless true"
 
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] The dashboard closed unexpectedly. Check the logs above.
-    timeout /t 12 /nobreak > nul
-    pause
-)
+timeout /t 8 /nobreak > nul
 
-timeout /t 12 /nobreak > nul
-
-:: Run the Vizualizer using the portable Python context
-start /min "Visualizer Streamlit" "%PYTHON_EXE%" -m streamlit run "%CHARTS_FILE%"
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] The visualizer closed unexpectedly. Check the logs above.
-    pause
-)
+:: Start Visualizer (fixed port 8502)  
+start "Visualizer" /D "." cmd /k "venv310\python.exe -m streamlit run code\visualizer.py --server.port 8502 --server.headless true"
 
 timeout /t 5 /nobreak > nul
+
+:: ==============================================================================
+:: OPEN FIREFOX PORTABLE AUTOMATICALLY
+:: ==============================================================================
+if exist "%BROWSER_EXE%" (
+    echo [INFO] Opening apps in Firefox Portable...
+    start "" "%BROWSER_EXE%" "http://localhost:8501"
+    timeout /t 3 /nobreak > nul
+    start "" "%BROWSER_EXE%" "http://localhost:8502"
+    echo.
+    echo [SUCCESS] Dashboard:     http://localhost:8501
+    echo [SUCCESS] Visualizer:    http://localhost:8502
+    echo [INFO] Firefox Portable opened automatically.
+) else (
+    echo [WARNING] Firefox Portable not found.
+    echo [INFO] Open manually:
+    echo Dashboard: http://localhost:8501
+    echo Visualizer: http://localhost:8502
+)
+
+echo.
+echo [DONE] System ready. Close this window when finished.
+popd
+pause
 exit
