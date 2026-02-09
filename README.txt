@@ -2,82 +2,57 @@
 Stochastic Optimization Framework for VDER Integration
 ===========================================================
 
-1. OVERVIEW
------------
-This project provides an integrated simulation framework to 
-optimize and analyze Distributed Energy Resources (DERs). 
-The system couples a MILP stochastic optimizer with an 
-OpenDSS digital twin to evaluate Technical, Economic, and 
-Social Equity impacts.
+text
 
-2. SYSTEM REQUIREMENTS
-----------------------
-A. Core Engines:
-   * OpenDSS: Must be accessible via 'py_dss_interface'.
-   * CPLEX: Required solver for 'docplex'.
+## ⚠️ MANUAL PREREQUISITES (One-time)
 
-B. Directory Structure:
-   Ensure the following hierarchy exists:
-   [Project Root]
-     ├── run.bat
-     ├── requirements.txt
-     ├── code/
-     └── Iowa_Distribution_Test_Systems/
+❌ CPLEX → IBM website (Academic license)
+❌ OpenDSS → DLLs in Windows PATH
 
-3. INSTALLATION & EXECUTION INSTRUCTIONS (STRICT)
--------------------------------------------------
-Follow these steps strictly to configure the environment 
-and run the simulation.
+## 🚀 QUICK START
 
-STEP 1: PYTHON 3.10 INSTALLATION
---------------------------------
-1. Download the Python 3.10 installer.
-2. Run the installer and select "Customize installation".
-3. CRITICAL: Change the installation path to exactly:
-   
-   C:\Python31
+**STEP 1:** Double-click `run.bat`
 
-4. Complete the installation.
+**STEP 2:** Answer prompts:
+Install Portable Environment? (Y/N): → Y (first time)
+Check requirements.txt? (Y/N): → Y
 
-STEP 2: VIRTUAL ENVIRONMENT SETUP
----------------------------------
-1. Open a Command Prompt (terminal) inside this [Project Root] folder.
-   (Tip: You can type 'cmd' in the folder address bar).
-2. Execute the following command to create the virtual environment:
+text
 
-   C:\Python31\python.exe -m venv venv310
+**STEP 3:** Firefox opens automatically:
+Dashboard: http://localhost:8501 ✅
+Visualizer: http://localhost:8502 ✅
 
-   *Note: This will create a folder named 'venv310' in the project root.*
+text
 
-STEP 3: LAUNCHING THE SYSTEM
-----------------------------
-1. In the Project Root, double-click the file: 'run.bat'.
-2. The script will verify that 'venv310' exists.
-3. When prompted:
-   "Do you want to verify/install libraries from requirements.txt? (Y/N)"
-   
-   Type: Y
-   (Press Enter)
+## 📁 WHAT run.bat DOES AUTOMATICALLY
 
-4. The script will automatically install all dependencies inside 
-   the virtual environment and launch the dashboard.
+✅ Downloads Python 3.10 Portable
+✅ Creates venv310 environment
+✅ Installs pip + wheel + libraries
+✅ Downloads Firefox Portable browser
+✅ Starts Dashboard + Visualizer
+✅ Opens both apps in browser
 
-STEP 4: ACCESS
---------------
-The Streamlit interface will open automatically in your 
-default web browser (http://localhost:8501).
+text
 
-4. TECHNICAL FEATURES
----------------------
-* Stochastic Scenarios: Generates paths for load and renewable 
-  uncertainty using Gaussian noise.
-* Dynamic Network Import: Automatically converts 'Master.dss' 
-  topology into an Excel database on startup.
-* Topological Zoning: Classifies grid nodes as Urban, Mixed, 
-  or Rural using K-Means clustering.
-* Smart Batch Mode: Checks 'MASTER_Hourly_Results.csv' logs 
-  to skip previously completed weight combinations.
+## 🔧 TROUBLESHOOTING
+
+BLANK PAGE? → FirefoxPortable.exe opens automatically (IE incompatible)
+CPLEX ERROR? → Install IBM CPLEX Community Edition
+OpenDSS ERROR? → Add OpenDSS DLLs to PATH
+"Port in use"? → Close other Streamlit apps (Ctrl+C)
+
+text
+
+## 🛠️ TECHNICAL FEATURES
+
+- Stochastic load/renewable uncertainty
+- OpenDSS→Excel topology conversion
+- K-Means grid zoning (Urban/Mixed/Rural)
+- Smart batch mode (resume capability)
 
 ===========================================================
-End of Documentation
+**🔥 Fully Portable: Python + Firefox + Libs = AUTO**
+**📦 Manual: Only CPLEX + OpenDSS DLLs**
 ===========================================================
