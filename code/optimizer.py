@@ -407,6 +407,41 @@ def run_optimization(lines, buses, loads, prof, transformers=None, scenarios=Non
     print(f"   [DEBUG OPTIMIZER] Nós Rurais identificados: {count_rural} de {len(nodes)}")
     mdl.maximize(expected_profit - mdl.sum(cap[n] * capex_node_day for n in nodes))
     
+    # --- MODEL COMPLEXITY REPORT BEFORE SOLVE ---
+    print("\n" + "="*50)
+    print("PRE-OPTIMIZATION REPORT")
+    print("="*50)
+
+    # 1. General Stats
+    print(f"Total Variables:    {mdl.number_of_variables:,}")
+    print(f"Total Constraints:  {mdl.number_of_constraints:,}")
+
+    # 2. Detailed Breakdown by Type
+    vars_to_count = {
+        "Voltage Squared (v_sq)": mdl.v_sq if hasattr(mdl, 'v_sq') else {},
+        "Active Power Gen (p_gen)": mdl.p_gen if hasattr(mdl, 'p_gen') else {},
+        "Reactive Power Gen (q_gen)": mdl.q_gen if hasattr(mdl, 'q_gen') else {},
+        "Active Power Flow (P)": mdl.p_flow if hasattr(mdl, 'p_flow') else {},
+        "Reactive Power Flow (Q)": mdl.q_flow if hasattr(mdl, 'q_flow') else {},
+        "Battery SoC (soc)": mdl.soc if hasattr(mdl, 'soc') else {},
+        "Battery Charge (p_ch)": mdl.p_ch if hasattr(mdl, 'p_ch') else {},
+        "Battery Discharge (p_ds)": mdl.p_ds if hasattr(mdl, 'p_ds') else {},
+    }
+
+    print("\nVARIABLE BREAKDOWN:")
+    for name, var_dict in vars_to_count.items():
+        count = len(var_dict)
+        if count > 0:
+            print(f"-> {name:25}: {count:,}")
+
+    # 3. Binary vs Continuous
+    num_binary = mdl.number_of_binary_variables
+    num_continuous = mdl.number_of_variables - num_binary
+    print(f"\nContinuous Variables: {num_continuous:,}")
+    print(f"Binary Variables:     {num_binary:,}")
+
+    print("="*50 + "\n")
+
     # ==========================================================================
     # SOLVE & PROCESS RESULTS
     # ==========================================================================
