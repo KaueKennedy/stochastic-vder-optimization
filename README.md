@@ -2,8 +2,6 @@
 Stochastic Optimization Framework for VDER Integration
 ===========================================================
 
-text
-
 ## ⚠️ MANUAL PREREQUISITES (One-time)
 
 ❌ CPLEX → IBM website (Academic license)
@@ -17,13 +15,9 @@ text
 Install Portable Environment? (Y/N): → Y (first time)
 Check requirements.txt? (Y/N): → Y
 
-text
-
 **STEP 3:** Firefox opens automatically:
 Dashboard: http://localhost:8501 ✅
 Visualizer: http://localhost:8502 ✅
-
-text
 
 ## 📁 WHAT run.bat DOES AUTOMATICALLY
 
@@ -34,16 +28,12 @@ text
 ✅ Starts Dashboard + Visualizer
 ✅ Opens both apps in browser
 
-text
-
 ## 🔧 TROUBLESHOOTING
 
 BLANK PAGE? → FirefoxPortable.exe opens automatically (IE incompatible)
 CPLEX ERROR? → Install IBM CPLEX Community Edition
 OpenDSS ERROR? → Add OpenDSS DLLs to PATH
 "Port in use"? → Close other Streamlit apps (Ctrl+C)
-
-text
 
 ## 🛠️ TECHNICAL FEATURES
 
