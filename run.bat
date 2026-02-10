@@ -91,6 +91,17 @@ echo [INFO] Installing libraries...
 "%PYTHON_EXE%" -m pip install --upgrade pip
 "%PYTHON_EXE%" -m pip install --prefer-binary -r "%REQ_FILE%"
 
+:: --- LINHA NOVA PARA O CPLEX ---
+if exist "cplex_lib" (
+    echo [INFO] Installing local CPLEX engine...
+    "%PYTHON_EXE%" -m pip install ".\cplex_lib"
+) else (
+    echo [WARNING] cplex_lib folder not found. Optimization might be limited.
+)
+:: -------------------------------
+
+:RUN_APPS
+
 :RUN_APPS
 echo.
 echo [INFO] Starting applications...

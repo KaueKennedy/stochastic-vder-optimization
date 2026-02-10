@@ -1,0 +1,28 @@
+%%{init: {
+  'theme': 'neutral',
+  'themeVariables': { 
+    'fontSize': '14px',
+    'primaryTextColor': '#000',
+    'primaryColor': '#fff',
+    'lineColor': '#333'
+  }
+}}%%
+
+flowchart LR
+    A[/VDER Weights<br/>ICAP, E, DRV<br/>LSRV, LMP/] 
+    B[Optimization<br/>CPLEX + LinDistFlow]
+    C[OpenDSS<br/>Physical Validation]
+    D[Global<br/>Performance<br/>Index<br/>GPI]
+    
+    A --> B --> C --> D
+    
+    E1[Economic<br/>ROI, LCOE]
+    E2[Technical<br/>Voltage, Losses]
+    E3[Equity<br/>Rural/Urban]
+    
+    D -.-> E1 & E2 & E3
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#e8f5e8
+    style D fill:#fff3e0

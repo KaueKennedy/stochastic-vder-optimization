@@ -1,0 +1,107 @@
+%%{init: {
+  'theme': 'base',
+  'flowchart': { 
+    'htmlLabels': true, 
+    'useMaxWidth': false
+  },
+  'themeVariables': { 
+    'fontSize': '25px',
+    'nodePadding': '30',
+    'clusterPadding': '10',
+    'subGraphTitleFontSize': '7px'
+  }
+}}%%
+
+flowchart TD
+    
+    %% Nodes Definition
+    Start([**Start of Simulation**])
+    
+    %% Input Block
+    Config[/Parametric Configuration <br/> Streamlit Interface: Control Tabs/]
+    
+    DataLoad[Input Data: Load, Iowa 240 Bus Network, Solar/Wind/Load Profiles, LMP Prices]
+    
+    PreProc[Spatial & Social Pre-processing <br/> K-Means Clustering, <br/> Score Locational...]
+
+    %% Subgraph: Optimizer Module
+    subgraph OptimizerModule [**OPTIMIZER**]
+        direction LR
+        MathModel[[Mathematical Model Construction]]
+        LinDist[[Network Linearization]]
+        Solver[[Optimization Resolution]]
+        
+        MathModel --> LinDist --> Solver
+    end
+
+    %% Decision Point
+    OptimalCheck{Optimal <br/> Solution Found?}
+    
+    %% Error Path
+    ErrorDisp[Error Display <br/> Infeasible Solution]
+    
+    %% Success Path
+    ExtractDec[Extract Optimal Decisions <br/> Capacities kW, <br/> Battery Profiles, SoC]
+
+    %% Subgraph: Digital Simulation
+    subgraph DigitalTwin [**SIMULATION**]
+        direction LR
+        InjectDER[[DER Injection into Model]]
+        PowerFlow[[Power Flow Execution]]
+        ExtractPhys[[Physical Results Extraction]]
+        
+        InjectDER --> PowerFlow --> ExtractPhys
+    end
+
+    Compare[Comparison&nbsp;&&nbsp;Validation:&nbsp;Optimized&nbsp;V&nbsp;vs&nbsp;Real]
+    KPIs[Performance&nbsp;Indicators:&nbsp;Profitability,&nbsp;Penetration,&nbsp;Social&nbsp;Focus]
+    Archive[(Results&nbsp;Archiving:&nbsp;Historical&nbsp;CSV&nbsp;File)]
+    Viz[Interactive&nbsp;Visualization:&nbsp;3D&nbsp;Chart,&nbsp;Financial&nbsp;Flows]
+    EndNode([**End**])
+
+    %% Connections / Flow
+    Start --> Config
+    Config --> DataLoad
+    DataLoad --> PreProc
+    PreProc --> OptimizerModule
+    
+    OptimizerModule --> OptimalCheck
+    
+    %% Decision Logic
+    OptimalCheck -- No --> ErrorDisp
+    ErrorDisp --> EndNode
+    
+    OptimalCheck -- Yes --> ExtractDec
+    ExtractDec --> DigitalTwin
+    
+    DigitalTwin --> Compare
+    Compare --> KPIs
+    KPIs --> Archive
+    Archive --> Viz
+    Viz --> EndNode
+
+    classDef forceWidth white-space:nowrap,fontSize:5px;
+    class Start,Config,DataLoad,PreProc,MathModel,LinDist,Solver,OptimalCheck,ErrorDisp,ExtractDec,InjectDER,PowerFlow,ExtractPhys,Compare,KPIs,Archive,Viz,EndNode forceWidth;    
+    
+    style Start fill:#d3d3d3,stroke:#333,stroke-width:2px
+    style Config fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style DataLoad fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style PreProc fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    
+    style MathModel fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style LinDist fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style Solver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    
+    style OptimalCheck fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style ErrorDisp fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style ExtractDec fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    
+    style InjectDER fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style PowerFlow fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style ExtractPhys fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    
+    style Compare fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style KPIs fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style Archive fill:#f5f5f5,stroke:#666,stroke-width:2px,shape:cylinder
+    style Viz fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style EndNode fill:#d3d3d3,stroke:#333,stroke-width:2px
