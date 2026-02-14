@@ -5,6 +5,12 @@ import time
 import sys
 import os
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# DEBUG subprocess
+print(f"[DEBUG index.py] cwd={os.getcwd()}")
+print(f"[DEBUG index.py] arquivos={os.listdir('.')[:5]}...")  # Primeiros 5
+print(f"[DEBUG index.py] config.py existe? {os.path.exists('config.py')}")
 from config import CFG
 
 # ==============================================================================

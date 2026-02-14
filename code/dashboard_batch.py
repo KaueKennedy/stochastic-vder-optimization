@@ -1476,13 +1476,41 @@ def app():
             
             # Se não existe, rodamos o DEF
             calculados += 1
-            texto_status.info(f"{msg} -> ⚙️ Logic Running...")
             peak = identified_peak_hours
             
             with area_de_desenho.container():
-                # Chama o seu def original sem mudar nada nele
-                rodar_cenario_completo(g, c, s, e, peak)
                 
+                status_texto = st.empty()
+
+                # Chama o seu def original sem mudar nada nele
+                for g, c, s, e in combinacoes:
+                    status_texto.info(f"Scenario {contador+1}/{total_teorico} | G:{g:.2f} C:{c:.2f} S:{s:.2f} E:{e:.2f} → ⚙️ Running...")
+                    try:
+                        rodar_cenario_completo(g, c, s, e, peak)
+                        calculados += 1
+                        status_texto.success(f"✅ Scenario {contador+1} OK | Total success: {calculados}")
+
+                    except KeyError as ke:
+                        pulados += 1
+                        status_texto.warning(f"⚠️ KeyError '{ke}' (G:{g:.2f} C:{c:.2f} S:{s:.2f} E:{e:.2f}) | Skipped: {pulados}")
+                        print(f"KeyError '{ke}' in scenario (G:{g:.2f} C:{c:.2f} S:{s:.2f} E:{e:.2f}). Skipping...")
+                        # Opcional: log em arquivo ou CSV de erros
+                        continue
+                    except Exception as ex:
+                        pulados += 1
+                        status_texto.error(f"❌ Error: {ex} (G:{g:.2f} C:{c:.2f} S:{s:.2f} E:{e:.2f}) | Skipped: {pulados}")
+                        print(f"Unexpected error in scenario (G:{g:.2f} C:{c:.2f} S:{s:.2f} E:{e:.2f}): {ex}. Skipping...")
+                        continue
+                
+
+                    contador += 1
+                    barra_progresso.progress(contador / total_teorico)
+
+            # Final status
+            status_texto.success(f"🎉 Batch completed! Success: {calculados} | Skipped: {pulados} | Total: {contador}")
+            print(f"Batch finished: {calculados} success, {pulados} skipped")  # Final terminal log
+
+
             # Adiciona na lista de existentes para não repetir se aparecer de novo (redundância)
             combinacoes_existentes.add(assinatura_atual)
             
@@ -1521,13 +1549,13 @@ def app():
         
         # Feedback visual enquanto roda
         with st.spinner(f"Executing Post-Processing (Flow, Scores, KPIs) with {peaks_str}..."):
-            try:
+            try:              
                 # Executa o arquivo index.py usando o mesmo interpretador Python atual
                 result = subprocess.run(
                     [sys.executable, script_path],
+                    cwd=CURRENT_DIR,
                     capture_output=True, # Captura o que o script imprimir (print)
-                    text=True,
-                    cwd=CURRENT_DIR
+                    text=True
                 )
                 
                 if result.returncode == 0:
