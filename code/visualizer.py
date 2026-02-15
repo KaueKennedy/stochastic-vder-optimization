@@ -8,6 +8,7 @@ import requests
 import json
 import os
 import streamlit as st
+import base64
 
 # --- CONFIGURATION (Caminhos Limpos) ---
 # Usa a mesma lógica do config.py
@@ -300,29 +301,55 @@ def main():
     st.sidebar.header("2. Filters")
     filter_vars = [c for c in cols_factors if c not in [axis_x, axis_y]]
     current_filters = {}
-    mask = pd.Series([True] * len(df))
-    
+    mask = pd.Series([True] * len(df))  # Começa com TUDO
+
     for f in filter_vars:
-        available_vals = sorted(df[f].unique())
-        if not available_vals: continue
-        val = st.sidebar.select_slider(f"Fix {f}:", options=available_vals, value=available_vals[len(available_vals)//2])
+        available_vals = sorted(df[f].dropna().unique())
+        if len(available_vals) < 2:  # Skip se só 1 valor
+            continue
+        
+        # Default: MÉDIA (não meio da lista)
+        default_val = df[f].median()
+        val = st.sidebar.select_slider(
+            f"Fix {f}:", 
+            options=available_vals, 
+            value=default_val  # ← MELHOR DEFAULT
+        )
         current_filters[f] = val
         mask &= (df[f] == val)
-        
+
     df_3d = df[mask].copy()
+
+    # ← CRÍTICO: DEBUG e Proteção
+    st.sidebar.markdown("---")
+    st.sidebar.metric("📊 Filtered Rows", len(df_3d))
+    if len(df_3d) == 0:
+        st.sidebar.error("❌ **NO DATA** after filters! Reset filters.")
+        df_3d = df.copy()  # ← FORÇA fallback para TUDO
+        st.sidebar.warning("🔄 **Auto-reset**: Showing ALL data.")
+
+    st.sidebar.caption(f"Filters: {current_filters}")
+
 
     # --- TABS ---
     tab_3d, tab_corr, tab_zones = st.tabs(["🏔️ 3D Landscape Analysis", "🔥 Correlations", "🌍 Zonal Analysis"])
 
+
     with tab_3d:
+        if df_3d.empty:
+            st.warning("No data. Try looser filters.")
+            st.stop()
         # Z Selector
         c_sel, _ = st.columns([1, 3])
         with c_sel:
             def_ix = all_metrics.index('GLOBAL_PERFORMANCE_INDEX') if 'GLOBAL_PERFORMANCE_INDEX' in all_metrics else 0
             axis_z = st.selectbox("Select Indicator (Z-Axis):", all_metrics, index=def_ix)
 
+            st.sidebar.markdown("---")
+            if st.sidebar.button("💾 **EXPORT ALL GRAPHS → XLS**"):
+                export_file = export_all_to_xls(df, df_3d, axis_x, axis_y, axis_z, current_filters, cols_factors)
+
         # 3D Plot
-        # 3D Plot Logic
         if not df_3d.empty:
             try:
                 # 1. Interpolation Grid
@@ -585,10 +612,61 @@ def main():
                         fig = px.imshow(pivot, color_continuous_scale="RdYlGn", origin='lower', zmin=0, zmax=max_val, labels=dict(color="$/kW"))
                         fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
                         st.plotly_chart(fig, width="stretch")
-                    
+                       
         else:
             st.error("Missing Zonal Data.")
             st.info("Ensure 'MASTER_Bus_Results.csv' and 'Rede_240Bus_Dados.xlsx' are in the correct paths.")
+
+# ==============================================================================
+# EXPORT ALL GRAPHS & TABLES TO XLS (NEW SECTION)
+# ==============================================================================
+def export_all_to_xls(df, df_3d, axis_x, axis_y, axis_z, current_filters, cols_factors):
+    """Export all graphs/tables data to single XLS with one sheet per visualization."""
+    with st.spinner("📊 Exporting all graphs to Excel..."):
+        output_file = os.path.join(RESULTS_DIR, f"Visualizer_Export_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx")
+        
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # 1. RAW DATA (Base)
+            df.to_excel(writer, sheet_name='01_Raw_Scores', index=False)
+            
+            # 2. 3D LANDSCAPE DATA
+            df_3d_export = df_3d[[axis_x, axis_y, axis_z]].copy()
+            df_3d_export.to_excel(writer, sheet_name='02_3D_Data', index=False)
+            
+            # 3. CORRELATION MATRIX (Full)
+            df_num = df.select_dtypes(include=[np.number])
+            corr_matrix = df_num.corr()
+            corr_df = corr_matrix.round(3)
+            corr_df.to_excel(writer, sheet_name='03_Correlation_Full')
+            
+            # 4. TOP CORRELATIONS (Input Weights only)
+            rows = [c for c in cols_factors if c in corr_matrix.index]
+            cols_raw = [c for c in df.columns if 'Score_' not in c and c not in cols_factors and c not in ['Sim_ID']]
+            valid_cols = [c for c in cols_raw if c in corr_matrix.columns]
+            top_corr = corr_matrix.loc[rows, valid_cols].round(3)
+            top_corr.to_excel(writer, sheet_name='04_Top_Correlations')
+            
+            # 5. ZONAL DATA
+            zone_cols = [c for c in df.columns if any(z in c for z in ['Rural', 'Mixed', 'Urban', 'Cap_Pct', 'Rev_per_kW'])]
+            if zone_cols:
+                df[df.columns.intersection(zone_cols)].to_excel(writer, sheet_name='05_Zonal_Data', index=False)
+            
+            # 6. METRIC DESCRIPTIONS (Info Table)
+            metrics_df = pd.DataFrame([
+                {'Metric': k, 'English': v['en'], 'Formula': v['eq']} 
+                for k, v in METRIC_INFO.items()
+            ])
+            metrics_df.to_excel(writer, sheet_name='06_Metric_Info', index=False)
+            
+            # 7. FILTER SUMMARY
+            filters_df = pd.DataFrame([current_filters])
+            filters_df.to_excel(writer, sheet_name='07_Filters_Used', index=False)
+        
+        st.sidebar.success(f"✅ **Exported!** [{output_file}]")
+        st.sidebar.markdown(f"[📁 **Download Here**](data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64.b64encode(open(output_file, 'rb').read()).decode()})")
+        return output_file
+
+
 
 
 if __name__ == "__main__":
