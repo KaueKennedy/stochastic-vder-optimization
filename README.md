@@ -1,9 +1,9 @@
-===========================================================
-Stochastic Optimization Framework for VDER Integration
-===========================================================
-
-## ⚠️ MANUAL PREREQUISITES (One-time)
-
+===========================================================  
+Stochastic Optimization Framework for VDER Integration  
+===========================================================  
+  
+## ⚠️ MANUAL PREREQUISITES (One-time)  
+  
 ❌ CPLEX → IBM website  
 - Copy the Cplex license files directly to the cplex_lib   folder. These files are usually located in the folder C:\Program Files\IBM\ILOG\CPLEX_Studio2211\cplex\python\3.10\x64_win64  
 ❌ OpenDSS → DLLs in Windows PATH  
