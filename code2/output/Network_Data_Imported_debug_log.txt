@@ -1,0 +1,53 @@
+[2026-05-02 12:19:15] Starting load_network_from_master()
+[2026-05-02 12:19:15] current_dir = c:\Users\KKCOD\OneDrive - Université Laval\Recherche\codes\code2
+[2026-05-02 12:19:15] project_root = c:\Users\KKCOD\OneDrive - Université Laval\Recherche\codes
+[2026-05-02 12:19:15] master_dss_path = c:\Users\KKCOD\OneDrive - Université Laval\Recherche\codes\Iowa_Distribution_Test_Systems\OpenDSS Model\OpenDSS Model\Master.dss
+[2026-05-02 12:19:15] output_xlsx_path = c:\Users\KKCOD\OneDrive - Université Laval\Recherche\codes\code2\parameters\Network_Data_Imported.xlsx
+[2026-05-02 12:19:15] log_path = c:\Users\KKCOD\OneDrive - Université Laval\Recherche\codes\code2\output\Network_Data_Imported_debug_log.txt
+[2026-05-02 12:19:15] Non-ASCII path detected, creating temporary ASCII copy
+[2026-05-02 12:19:15] compile_master_path remapped to C:\Users\KKCOD\AppData\Local\Temp\dss_ascii_mmq0__r2\OpenDSS_Model\Master.dss
+[2026-05-02 12:19:16] DSS object created
+[2026-05-02 12:19:16] Compile command sent
+[2026-05-02 12:19:16] circuit.name = 240_bus_test_system
+[2026-05-02 12:19:16] num_buses = 436
+[2026-05-02 12:19:16] num_nodes = 915
+[2026-05-02 12:19:16] num_circuit_elements = 640
+[2026-05-02 12:19:16] len(all_bus_names) = 436
+[2026-05-02 12:19:16] len(all_element_names) = 640
+[2026-05-02 12:19:16] len(all_node_names) = 915
+[2026-05-02 12:19:16] first_10_buses = ['eq_source_bus', 'bus_xfmr', 'bus1', 'bus1003', 't_bus1003_l', 'bus1004', 't_bus1004_l', 'bus1005', 't_bus1005_l', 'bus1006']
+[2026-05-02 12:19:16] first_10_elements = ['Vsource.source', 'Transformer.sub_xfmr', 'Transformer.sub_regulator_a', 'Transformer.sub_regulator_b', 'Transformer.sub_regulator_c', 'RegControl.reg_contr_a', 'RegControl.reg_contr_b', 'RegControl.reg_contr_c', 'Transformer.t_1003', 'Transformer.t_1004']
+[2026-05-02 12:19:16] len(line_names) = 242
+[2026-05-02 12:19:16] len(transformer_names) = 198
+[2026-05-02 12:19:16] len(load_names) = 194
+[2026-05-02 12:19:16] first_10_lines = ['l_1001_1002', 'l_1002_1003', 'l_1002_1004', 'l_1004_1005', 'l_1005_1006', 'l_1006_1007', 'l_1006_1008', 'l_1008_1009', 'l_1009_1010', 'l_1009_1011']
+[2026-05-02 12:19:16] first_10_transformers = ['sub_xfmr', 'sub_regulator_a', 'sub_regulator_b', 'sub_regulator_c', 't_1003', 't_1004', 't_1005', 't_1006', 't_1007', 't_1008']
+[2026-05-02 12:19:16] first_10_loads = ['load_1003', 'load_1004', 'load_1005', 'load_1006', 'load_1007', 'load_1008', 'load_1009', 'load_1010', 'load_1011', 'load_1012']
+[2026-05-02 12:19:16] Starting bus extraction
+[2026-05-02 12:19:16] bus[1] = eq_source_bus
+[2026-05-02 12:19:16] bus[2] = bus_xfmr
+[2026-05-02 12:19:16] bus[3] = bus1
+[2026-05-02 12:19:16] bus[4] = bus1003
+[2026-05-02 12:19:16] bus[5] = t_bus1003_l
+[2026-05-02 12:19:16] Starting line extraction
+[2026-05-02 12:19:16] Starting line extraction
+[2026-05-02 12:19:16] line[1] = l_1001_1002
+[2026-05-02 12:19:16] line[2] = l_1002_1003
+[2026-05-02 12:19:16] line[3] = l_1002_1004
+[2026-05-02 12:19:16] line[4] = l_1004_1005
+[2026-05-02 12:19:16] line[5] = l_1005_1006
+[2026-05-02 12:19:16] Starting transformer extraction
+[2026-05-02 12:19:16] transformer[1] = sub_xfmr
+[2026-05-02 12:19:16] transformer[2] = sub_regulator_a
+[2026-05-02 12:19:16] transformer[3] = sub_regulator_b
+[2026-05-02 12:19:16] transformer[4] = sub_regulator_c
+[2026-05-02 12:19:16] transformer[5] = t_1003
+[2026-05-02 12:19:16] Starting load extraction
+[2026-05-02 12:19:16] load[1] = load_1003
+[2026-05-02 12:19:16] load[2] = load_1004
+[2026-05-02 12:19:16] load[3] = load_1005
+[2026-05-02 12:19:16] load[4] = load_1006
+[2026-05-02 12:19:16] load[5] = load_1007
+[2026-05-02 12:19:16] Saving Excel workbook
+[2026-05-02 12:19:16] Excel workbook saved successfully
+[2026-05-02 12:19:16] Returning imported data
