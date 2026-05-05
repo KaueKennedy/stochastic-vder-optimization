@@ -1152,6 +1152,147 @@ def build_network_case(imported_data, profiles, config):
     write_debug_log("Montagem da rede concluida com sucesso.")
     return network_case
 
+def configure_events_interactively():
+    """Helper function to prompt user for simulation scenarios."""
+    print("\n--- STOCHASTIC SIMULATION: EVENT CONFIGURATION ---")
+    cfg = {
+        "seed": 42,
+        "enable_grid_loss": False,
+        "line_outage_mode": "none"
+    }
+    
+    # Prompt for Substation/Grid Loss
+    ans_grid = input("1. Simulate Main Grid Loss / Substation Failure? (y/n) [n]: ").strip().lower()
+    if ans_grid == 'y':
+        cfg["enable_grid_loss"] = True
+        try:
+            cfg["grid_loss_start"] = int(input("   - Start hour (0-8759) [10]: ") or 10)
+            cfg["grid_loss_end"] = int(input("   - End hour (0-8759)   [20]: ") or 20)
+        except ValueError:
+            cfg["grid_loss_start"], cfg["grid_loss_end"] = 10, 20
+
+    # Prompt for Distribution Line Damage
+    print("\n2. Simulate Distribution Line Damage?")
+    print("   [0] None (Intact network)")
+    print("   [1] Random Outage (5% of lines)")
+    print("   [2] Hub Attack (Targets highly connected nodes)")
+    ans_line = input("   Choice (0/1/2) [0]: ").strip()
+    
+    if ans_line == '1':
+        cfg["line_outage_mode"] = "random"
+    elif ans_line == '2':
+        cfg["line_outage_mode"] = "hub_attack"
+        
+    print("--------------------------------------------------\n")
+    return cfg
+def apply_event(network_case, event_config=None):
+    """
+    Modifica diretamente o dicionario 'network_case' para simular danos 
+    fisicos e classificar cargas. Funciona recebendo os eventos ativados no terminal.
+    """
+    import numpy as np
+
+    if event_config is None:
+        event_config = {}
+
+    horizon = int(network_case["horizon"])
+    buses_df = network_case["buses_exact_df"]
+    lines_df = network_case["lines_df"]
+    
+    seed = event_config.get("seed", 42)
+    rng = np.random.default_rng(seed)
+    
+    # ---------------------------------------------------------
+    # 1. Criticidade e Sensibilidade Topologica (Sempre Roda para ter os pesos)
+    # ---------------------------------------------------------
+    vital_ratio = 0.02
+    essential_ratio = 0.15
+    
+    consumer_weights = []
+    consumer_classes = []
+    
+    for _ in range(len(buses_df)):
+        rand_val = rng.random()
+        if rand_val < vital_ratio:
+            consumer_classes.append("Class 1 (Life/Safety)")
+            consumer_weights.append(100.0) 
+        elif rand_val < (vital_ratio + essential_ratio):
+            consumer_classes.append("Class 2 (Essential)")
+            consumer_weights.append(10.0)  
+        else:
+            consumer_classes.append("Class 3 (Residential)")
+            consumer_weights.append(1.0)   
+
+    buses_df["ConsumerClass"] = consumer_classes
+    buses_df["ConsumerWeight"] = consumer_weights
+
+    # Sensibilidade
+    degree_dict = {bus: 0 for bus in buses_df["BusName"]}
+    if not lines_df.empty and "Bus1" in lines_df.columns and "Bus2" in lines_df.columns:
+        for _, row in lines_df.iterrows():
+            if row["Bus1"] in degree_dict: degree_dict[row["Bus1"]] += 1
+            if row["Bus2"] in degree_dict: degree_dict[row["Bus2"]] += 1
+                
+    topological_sensitivity = []
+    for bus in buses_df["BusName"]:
+        deg = degree_dict.get(bus, 0)
+        if deg >= 3: topological_sensitivity.append(3.0)
+        elif deg == 2: topological_sensitivity.append(1.5)
+        else: topological_sensitivity.append(1.0)
+            
+    buses_df["NodeDegree"] = [degree_dict.get(b, 0) for b in buses_df["BusName"]]
+    buses_df["TopologicalSensitivity"] = topological_sensitivity
+    buses_df["FinalResilienceWeight"] = buses_df["ConsumerWeight"] * buses_df["TopologicalSensitivity"]
+
+    network_case["buses_exact_df"] = buses_df
+
+    # ---------------------------------------------------------
+    # 2. Modificadores Baseados na Seleção do Terminal
+    # ---------------------------------------------------------
+    
+    # Padrao: Rede operando normalmente
+    grid_avail = np.ones(horizon)
+    event_start, event_end = None, None
+    
+    # Evento 1: Apagão da Rede Principal (Subestação)
+    if event_config.get("enable_grid_loss", False):
+        start_h = event_config.get("grid_loss_start", 10)
+        end_h = event_config.get("grid_loss_end", 20)
+        if start_h < end_h:
+            grid_avail[start_h:end_h] = 0.0
+            event_start, event_end = start_h, end_h
+            
+    network_case["grid_availability_profile"] = grid_avail
+    network_case["event_start_hour"] = event_start
+    network_case["event_end_hour"] = event_end
+
+    # Evento 2: Queda de Linhas / Falhas Fisicas
+    outage_mode = event_config.get("line_outage_mode", "none") 
+    if outage_mode != "none" and not lines_df.empty:
+        lines_df["IsDamaged"] = False
+        lines_to_fail = []
+        
+        if outage_mode == "random":
+            num_fails = max(1, int(len(lines_df) * 0.05))
+            lines_to_fail = rng.choice(lines_df["Name"].values, num_fails, replace=False)
+            
+        elif outage_mode == "hub_attack":
+            hubs = buses_df[buses_df["NodeDegree"] >= 3]["BusName"].values
+            vulnerable_lines = lines_df[lines_df["Bus1"].isin(hubs) | lines_df["Bus2"].isin(hubs)]
+            if not vulnerable_lines.empty:
+                num_fails = min(3, len(vulnerable_lines))
+                lines_to_fail = rng.choice(vulnerable_lines["Name"].values, num_fails, replace=False)
+
+        if len(lines_to_fail) > 0:
+            mask = lines_df["Name"].isin(lines_to_fail)
+            if "NormAmps" in lines_df.columns:
+                lines_df.loc[mask, "NormAmps"] = 1e-6
+            lines_df.loc[mask, "IsDamaged"] = True
+            
+        network_case["lines_df"] = lines_df
+
+    return network_case
+
 def run_stochastic_simulation(network_case):
     import os
     import numpy as np
@@ -1410,9 +1551,304 @@ def run_stochastic_simulation(network_case):
 
     return optimization_output
 
+def evaluate_metrics(network_case, opt_output):
+    """
+    Calculates IEEE Std 1366-2012 Reliability indices and Resilience metrics 
+    based on the actual simulated output.
+    Extracts the raw math values (Numerator/Denominator) for transparency.
+    """
+    import os
+    import numpy as np
+    import pandas as pd
+
+    config = opt_output["config_used"]
+    output_dir = os.path.dirname(config["output_xlsx_path"])
+    metrics_path = os.path.join(output_dir, "Metrics_Results.xlsx")
+    os.makedirs(output_dir, exist_ok=True)
+
+    horizon = int(network_case["horizon"])
+    dt = float(network_case["dt_hours"])
+    sys_ts = opt_output["system_time_series"]
+    buses_df = network_case["buses_exact_df"].copy()
+    
+    # P_supplied is the actual power injected to supply the demand
+    bess_dispatch = sys_ts["BatteryDispatchKW"].values
+    bess_discharge = np.maximum(0, bess_dispatch)
+    p_supplied = sys_ts["GridImportKW"].values + sys_ts["PVGenerationKW"].values + sys_ts["WindGenerationKW"].values + bess_discharge
+    total_demand = sys_ts["TotalLoadKW"].values
+
+    if "NumCustomers" not in buses_df.columns:
+        buses_df["NumCustomers"] = 1
+    buses_df["Customers"] = buses_df["NumCustomers"].fillna(1)
+    total_customers = max(1, buses_df["Customers"].sum())
+
+    base_load_arr = buses_df["BaseLoadKW"].fillna(0).values
+    total_base_load = max(1e-6, np.sum(base_load_arr))
+    load_shares = base_load_arr / total_base_load
+
+    if "FinalResilienceWeight" not in buses_df.columns:
+        buses_df["FinalResilienceWeight"] = 1.0
+        buses_df["ConsumerClass"] = "Class 3 (Residential)"
+        
+    buses_df = buses_df.sort_values(by="FinalResilienceWeight", ascending=False)
+
+    ens_series = np.zeros(horizon)
+    ens_crit = np.zeros(horizon)
+    bus_interrupted = np.zeros((len(buses_df), horizon))
+    
+    for t in range(horizon):
+        avail = p_supplied[t]
+        dem = total_demand[t]
+        bus_demands = load_shares * dem
+        
+        if avail >= dem - 1e-4:
+            ens_series[t] = 0
+            ens_crit[t] = 0
+        else:
+            ens_series[t] = dem - avail
+            remaining = avail
+            for idx in range(len(buses_df)):
+                req = bus_demands[idx]
+                if remaining >= req - 1e-4:
+                    remaining -= req
+                else:
+                    bus_interrupted[idx, t] = 1
+                    unmet = req - remaining
+                    remaining = 0
+                    if buses_df.iloc[idx]["ConsumerClass"] in ["Class 1 (Life/Safety)", "Class 2 (Essential)"]:
+                        ens_crit[t] += unmet
+
+    bus_customers = buses_df["Customers"].values
+    
+    # 1. SAIDI (System Average Interruption Duration Index)
+    hours_interrupted = np.sum(bus_interrupted, axis=1) * dt
+    cust_hours_out = np.sum(hours_interrupted * bus_customers)
+    saidi = cust_hours_out / total_customers
+    
+    # 2. SAIFI (System Average Interruption Frequency Index)
+    transitions = np.diff(bus_interrupted, axis=1)
+    starts = (transitions == 1).sum(axis=1) + bus_interrupted[:, 0]
+    cust_interruptions = np.sum(starts * bus_customers)
+    saifi = cust_interruptions / total_customers
+    
+    # 3. CAIDI (Customer Average Interruption Duration Index)
+    caidi = cust_hours_out / cust_interruptions if cust_interruptions > 0 else 0.0
+    
+    # 4. ASAI (Average Service Availability Index)
+    total_cust_hours_demanded = total_customers * horizon * dt
+    cust_hours_served = total_cust_hours_demanded - cust_hours_out
+    asai = cust_hours_served / total_cust_hours_demanded
+    
+    total_ens = np.sum(ens_series) * dt
+    crit_ens = np.sum(ens_crit) * dt
+
+    summary_df = pd.DataFrame([
+        {"Metric": "SAIDI (Hours/Cust)", "Formula": "Σ(Cust Hours Out) / Total Cust", "Numerator": round(cust_hours_out, 2), "Denominator": total_customers, "Calculation": f"{round(cust_hours_out,2)} / {total_customers}", "Value": round(saidi, 4)},
+        {"Metric": "SAIFI (Freq/Cust)", "Formula": "Σ(Cust Interruptions) / Total Cust", "Numerator": round(cust_interruptions, 2), "Denominator": total_customers, "Calculation": f"{round(cust_interruptions,2)} / {total_customers}", "Value": round(saifi, 4)},
+        {"Metric": "CAIDI (Hours/Outage)", "Formula": "Σ(Cust Hours Out) / Σ(Cust Interruptions)", "Numerator": round(cust_hours_out, 2), "Denominator": round(cust_interruptions, 2), "Calculation": f"{round(cust_hours_out,2)} / {round(cust_interruptions,2)}" if cust_interruptions > 0 else "0 / 0", "Value": round(caidi, 4)},
+        {"Metric": "ASAI (Availability %)", "Formula": "Cust Hours Served / Cust Hours Demanded", "Numerator": round(cust_hours_served, 2), "Denominator": round(total_cust_hours_demanded, 2), "Calculation": f"{round(cust_hours_served,2)} / {round(total_cust_hours_demanded,2)}", "Value": round(asai * 100, 4)},
+        {"Metric": "Total ENS (kWh)", "Formula": "Σ(Demand - Supplied) * dt", "Numerator": round(total_ens, 2), "Denominator": "-", "Calculation": "-", "Value": round(total_ens, 2)},
+        {"Metric": "Critical ENS (kWh)", "Formula": "Σ(Critical Demand Unmet) * dt", "Numerator": round(crit_ens, 2), "Denominator": "-", "Calculation": "-", "Value": round(crit_ens, 2)}
+    ])
+
+    ts_df = pd.DataFrame({
+        "TimeStep": np.arange(horizon),
+        "TotalDemandKW": total_demand,
+        "PowerSuppliedKW": p_supplied,
+        "Total_ENS_KW": ens_series,
+        "Critical_ENS_KW": ens_crit
+    })
+
+    with pd.ExcelWriter(metrics_path, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="IEEE_1366_Metrics", index=False)
+        ts_df.to_excel(writer, sheet_name="Time_Series", index=False)
+        buses_df.to_excel(writer, sheet_name="Bus_Data", index=False)
+        
+    return {"summary": summary_df, "time_series": ts_df, "buses_df": buses_df}
+
+def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
+    """
+    Creates a full-width interactive HTML dashboard using Plotly.
+    Includes a large Topology Map, Table with formulas/math, ENS curve, and Stacked Bar Dispatch.
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import networkx as nx
+        import pandas as pd
+    except ImportError:
+        print("Missing libraries. Run: pip install plotly networkx pandas")
+        return
+
+    sys_ts = opt_output["system_time_series"]
+    res_ts = metrics_output["time_series"]
+    buses_df = metrics_output["buses_df"]
+    lines_df = network_case["lines_df"]
+    summary_df = metrics_output["summary"]
+    horizon = len(sys_ts)
+    time_axis = np.arange(horizon)
+
+    # BESS SOC %
+    bess_max_kwh = buses_df["Installed_BESS_kWh"].sum()
+    bess_max_kwh = bess_max_kwh if bess_max_kwh > 0 else 1.0 
+    soc_pct = (sys_ts["BatterySOC_kWh"].values / bess_max_kwh) * 100
+
+    # 1. Build NetworkX Graph
+    G = nx.Graph()
+    for _, row in lines_df.iterrows():
+        is_damaged = row.get("IsDamaged", False)
+        G.add_edge(row["Bus1"], row["Bus2"], damaged=is_damaged, name=row["Name"])
+        
+    for _, row in buses_df.iterrows():
+        b = row["BusName"]
+        if not G.has_node(b):
+            G.add_node(b)
+            
+        pv = row.get("Installed_PV_KW", 0)
+        wind = row.get("Installed_Wind_KW", 0)
+        bess = row.get("Installed_BESS_kWh", 0)
+        cls = row.get("ConsumerClass", "Class 3 (Residential)")
+        sens = row.get("TopologicalSensitivity", 1.0)
+        
+        G.nodes[b].update({"pv": pv, "wind": wind, "bess": bess, "cls": cls, "sens": sens, "tot_der": pv + wind})
+
+    pos = nx.kamada_kawai_layout(G)
+    try:
+        source_bus = sorted(G.degree, key=lambda x: x[1], reverse=True)[0][0]
+    except:
+        source_bus = list(G.nodes)[0]
+
+    color_map = {"Class 1 (Life/Safety)": "red", "Class 2 (Essential)": "orange", "Class 3 (Residential)": "blue"}
+
+    # 2. Build Subplots (4 Rows, Full Width)
+    fig = make_subplots(
+        rows=4, cols=1, 
+        specs=[
+            [{"type": "xy"}], 
+            [{"type": "table"}], 
+            [{"type": "xy"}],
+            [{"type": "xy", "secondary_y": True}]
+        ],
+        subplot_titles=(
+            "Network Topology & DER Locations", 
+            "IEEE Std 1366-2012 Metrics & Formulas", 
+            "Resilience Performance (Energy Not Supplied)", 
+            "Operational Dispatch (Grid, DER, BESS & SOC %)"
+        ),
+        row_heights=[0.35, 0.15, 0.20, 0.30],
+        vertical_spacing=0.06
+    )
+
+    # --- PLOT 1: Topology Map ---
+    edge_x, edge_y, damage_x, damage_y = [], [], [], []
+    for edge in G.edges(data=True):
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        if edge[2].get("damaged", False):
+            damage_x.extend([x0, x1, None])
+            damage_y.extend([y0, y1, None])
+        else:
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='lightgray'), hoverinfo='none', showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=damage_x, y=damage_y, mode='lines', line=dict(width=3, color='red', dash='dash'), name='Damaged Lines'), row=1, col=1)
+
+    for cls_name, color in color_map.items():
+        node_x, node_y, sizes, texts = [], [], [], []
+        for node in G.nodes():
+            nd = G.nodes[node]
+            if nd.get("cls") == cls_name:
+                node_x.append(pos[node][0])
+                node_y.append(pos[node][1])
+                sizes.append(6 + (nd["tot_der"] / 20.0)) # Scales ball size
+                
+                txt = (f"<b>Bus:</b> {node}<br><b>Class:</b> {cls_name}<br>"
+                       f"<b>Topo Sens:</b> {nd['sens']}<br>"
+                       f"<b>PV:</b> {nd['pv']} kW | <b>Wind:</b> {nd['wind']} kW<br>"
+                       f"<b>BESS:</b> {nd['bess']} kWh")
+                texts.append(txt)
+                
+        fig.add_trace(go.Scatter(x=node_x, y=node_y, mode='markers', hovertext=texts, hoverinfo="text",
+                                 marker=dict(color=color, size=sizes, line=dict(width=1, color='black')), 
+                                 name=cls_name), row=1, col=1)
+                                 
+    fig.add_trace(go.Scatter(x=[pos[source_bus][0]], y=[pos[source_bus][1]], mode='markers',
+                             marker=dict(symbol='star', size=18, color='gold', line=dict(width=2, color='black')),
+                             name='Substation', hovertext="Main Substation"), row=1, col=1)
+
+    # --- PLOT 2: IEEE 1366 Table ---
+    fig.add_trace(go.Table(
+        header=dict(values=["<b>Metric</b>", "<b>IEEE 1366 Formula</b>", "<b>Numerator</b>", "<b>Denominator</b>", "<b>Calculation</b>", "<b>Final Value</b>"],
+                    fill_color='royalblue', align='left', font=dict(color='white', size=12)),
+        cells=dict(values=[
+            summary_df["Metric"], summary_df["Formula"], summary_df["Numerator"], 
+            summary_df["Denominator"], summary_df["Calculation"], summary_df["Value"]
+        ], fill_color='aliceblue', align='left', font=dict(color='black', size=11))
+    ), row=2, col=1)
+
+    # --- PLOT 3: Resilience ENS Curves ---
+    fig.add_trace(go.Scatter(x=time_axis, y=res_ts["Total_ENS_KW"], fill='tozeroy', name="Total ENS", line=dict(color='orange')), row=3, col=1)
+    fig.add_trace(go.Scatter(x=time_axis, y=res_ts["Critical_ENS_KW"], fill='tozeroy', name="Critical ENS", line=dict(color='red')), row=3, col=1)
+
+    # --- PLOT 4: Stacked Bar Dispatch & SOC ---
+    bess_charge = np.where(sys_ts["BatteryDispatchKW"] < 0, np.abs(sys_ts["BatteryDispatchKW"]), 0)
+    bess_discharge = np.maximum(0, sys_ts["BatteryDispatchKW"])
+    
+    # Bars (barmode='relative' stacks them automatically in the layout)
+    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["GridImportKW"], name="Grid Import", marker_color='gray'), row=4, col=1)
+    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["PVGenerationKW"], name="PV Gen", marker_color='gold'), row=4, col=1)
+    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["WindGenerationKW"], name="Wind Gen", marker_color='lightblue'), row=4, col=1)
+    fig.add_trace(go.Bar(x=time_axis, y=bess_discharge, name="BESS Discharge", marker_color='lightgreen'), row=4, col=1)
+    
+    # Negative Bar for BESS Charge
+    fig.add_trace(go.Bar(x=time_axis, y=-bess_charge, name="BESS Charge", marker_color='darkgreen'), row=4, col=1)
+    
+    # Continuous line for Demand
+    fig.add_trace(go.Scatter(x=time_axis, y=sys_ts["TotalLoadKW"], name="Total Demand", mode='lines', line=dict(color='black', width=2)), row=4, col=1)
+    
+    # SOC on Secondary Y-Axis
+    fig.add_trace(go.Scatter(x=time_axis, y=soc_pct, name="Battery SOC (%)", mode='lines', line=dict(color='purple', width=2)), row=4, col=1, secondary_y=True)
+
+    # Shading the event area on ENS and Dispatch
+    event_mask = network_case.get("grid_availability_profile", np.ones(horizon)) == 0
+    if event_mask.any():
+        event_starts = res_ts.index[event_mask & ~pd.Series(event_mask).shift(1).fillna(False)].tolist()
+        event_ends = res_ts.index[event_mask & ~pd.Series(event_mask).shift(-1).fillna(False)].tolist()
+        for s, e in zip(event_starts, event_ends):
+            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x3", yref="paper", fillcolor="red", opacity=0.1, line_width=0)
+            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x4", yref="paper", fillcolor="red", opacity=0.1, line_width=0)
+            fig.add_annotation(x=s, y=0.95, xref="x3", yref="paper", text="Grid Event", showarrow=False, xanchor="left", font=dict(color="red"))
+
+    # Formatting
+    fig.update_layout(
+        title_text="Microgrid Planning, Reliability & Resilience Dashboard", 
+        height=1400, 
+        template="plotly_white",
+        barmode='relative', # Stacks bars (positive goes up, negative goes down)
+        hovermode="x unified"
+    )
+    
+    fig.update_xaxes(visible=False, row=1, col=1)
+    fig.update_yaxes(visible=False, row=1, col=1)
+    
+    fig.update_yaxes(title_text="ENS (kW)", row=3, col=1)
+    fig.update_yaxes(title_text="Power (kW)", row=4, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="SOC (%)", row=4, col=1, secondary_y=True, range=[0, 105])
+    fig.update_xaxes(title_text="Time (Hours)", row=4, col=1)
+
+    fig.show()
 
 if __name__ == "__main__":
     imported_data = load_network_from_master()
     profiles = load_or_create_profiles(imported_data)
     network_case = build_network_case(imported_data, profiles, CONFIG)
+    event_config = configure_events_interactively()
+    apply_event(network_case, event_config)
     optimization_output = run_stochastic_simulation(network_case)
+
+    # 5. Evaluate Metrics (Selective Load Shedding, IEEE 1366, Exports Excel)
+    metrics_output = evaluate_metrics(network_case, optimization_output)
+    
+    # 6. Show Interactive Dashboard (Plotly HTML)
+    visualize_interactive_dashboard(network_case, optimization_output, metrics_output)
