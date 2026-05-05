@@ -1765,16 +1765,20 @@ def evaluate_metrics(network_case, opt_output):
 
 def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
     """
-    Creates a full-width interactive HTML dashboard using Plotly.
-    Includes a large Topology Map, Table with formulas/math, ENS curve, and Stacked Bar Dispatch.
+    Creates an interactive local web dashboard using Plotly Dash.
+    Separates the view into Two Tabs: 
+      Tab 1: Physical Grid Topology (Map)
+      Tab 2: IEEE 1366 Metrics, ENS, and Dispatch 
     """
     try:
+        import dash
+        from dash import dcc, html
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
         import numpy as np
         import pandas as pd
     except ImportError:
-        print("Missing libraries. Run: pip install plotly pandas numpy")
+        print("Missing libraries. Run: pip install dash plotly pandas numpy")
         return
 
     sys_ts = opt_output["system_time_series"]
@@ -1785,12 +1789,9 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
     horizon = len(sys_ts)
     time_axis = np.arange(horizon)
 
-    # BESS SOC %
-    bess_max_kwh = buses_df["Installed_BESS_kWh"].sum() if "Installed_BESS_kWh" in buses_df.columns else 0
-    bess_max_kwh = bess_max_kwh if bess_max_kwh > 0 else 1.0 
-    soc_pct = (sys_ts["BatterySOC_kWh"].values / bess_max_kwh) * 100
-
-    # 1. Agrupar Topologia (Consolidar Lado Alta/Baixa no mesmo lugar físico)
+    # ==========================================
+    # DATA PREP: Topology Map
+    # ==========================================
     buses_df_map = buses_df.copy()
     buses_df_map["CoordKey"] = buses_df_map["X"].round(4).astype(str) + "_" + buses_df_map["Y"].round(4).astype(str)
     
@@ -1804,40 +1805,17 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
         "ConsumerClass": "first",
         "TopologicalSensitivity": "max"
     }
-    
     map_nodes_df = buses_df_map[buses_df_map["X"].abs() > 1e-6].groupby("CoordKey").agg(agg_funcs).reset_index()
 
-    # 2. Build Subplots (4 Rows, Full Width)
-    fig = make_subplots(
-        rows=4, cols=1, 
-        specs=[
-            [{"type": "xy"}], 
-            [{"type": "table"}], 
-            [{"type": "xy"}],
-            [{"type": "xy", "secondary_y": True}]
-        ],
-        subplot_titles=(
-            "Network Topology & DER Locations", 
-            "IEEE Std 1366-2012 Metrics & Formulas", 
-            "Resilience Performance (Energy Not Supplied)", 
-            "Operational Dispatch (Grid, DER, BESS & SOC %)"
-        ),
-        row_heights=[0.35, 0.15, 0.20, 0.30],
-        vertical_spacing=0.06
-    )
-
-    # --- PLOT 1: Topology Map ---
-    edge_x, edge_y, damage_x, damage_y = [], [], [], []
+    fig_map = go.Figure()
     
+    edge_x, edge_y, damage_x, damage_y = [], [], [], []
     for _, row in lines_df.iterrows():
-        b1, b2 = row["Bus1"], row["Bus2"]
-        p1 = buses_df_map[buses_df_map["BusName"] == b1]
-        p2 = buses_df_map[buses_df_map["BusName"] == b2]
-        
+        p1 = buses_df_map[buses_df_map["BusName"] == row["Bus1"]]
+        p2 = buses_df_map[buses_df_map["BusName"] == row["Bus2"]]
         if not p1.empty and not p2.empty:
             x1, y1 = p1.iloc[0]["X"], p1.iloc[0]["Y"]
             x2, y2 = p2.iloc[0]["X"], p2.iloc[0]["Y"]
-            
             if abs(x1) > 1e-6 and abs(x2) > 1e-6:
                 if row.get("IsDamaged", False):
                     damage_x.extend([x1, x2, None])
@@ -1846,20 +1824,14 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
                     edge_x.extend([x1, x2, None])
                     edge_y.extend([y1, y2, None])
 
-    # Normal Lines
-    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='lightgray'), hoverinfo='none', showlegend=False), row=1, col=1)
-    
-    # Damaged Lines
+    fig_map.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='lightgray'), hoverinfo='none', showlegend=False))
     if damage_x:
-        fig.add_trace(go.Scatter(x=damage_x, y=damage_y, mode='lines', line=dict(width=4, color='red', dash='dash'), name='⚠️ Damaged Line / Fault'), row=1, col=1)
+        fig_map.add_trace(go.Scatter(x=damage_x, y=damage_y, mode='lines', line=dict(width=4, color='red', dash='dash'), name='⚠️ Damaged Line / Fault'))
 
-    # Node Colors & Priorities
     node_text, node_colors, node_sizes = [], [], []
-    
     for _, row in map_nodes_df.iterrows():
         cls = row.get('ConsumerClass', 'Unknown')
         sens = row.get('TopologicalSensitivity', 1.0)
-        
         txt = f"<b>Node(s):</b><br>{row['BusName']}<br><b>Class:</b> {cls}<br><b>Topological Degree:</b> {sens}"
         
         is_der = (row.get('Installed_PV_KW',0) > 0 or row.get('Installed_Wind_KW',0) > 0 or row.get('Installed_BESS_kWh',0) > 0)
@@ -1869,103 +1841,108 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
             if row.get('Installed_Wind_KW',0) > 0: txt += f"<br>💨 Wind: {row['Installed_Wind_KW']} kW"
             if row.get('Installed_BESS_kWh',0) > 0: txt += f"<br>🔋 BESS: {row['Installed_BESS_kWh']} kWh"
 
-        # Prioritization Colors
         if "LifeSafety" in str(cls) or "Class 1" in str(cls):
-            node_colors.append('#d62728')  # Red
+            node_colors.append('#d62728')
             node_sizes.append(14)
         elif sens >= 3.0:
-            node_colors.append('#ff7f0e')  # Orange
+            node_colors.append('#ff7f0e')
             node_sizes.append(10)
         elif is_der:
-            node_colors.append('#2ca02c')  # Green
+            node_colors.append('#2ca02c')
             node_sizes.append(12)
         else:
-            node_colors.append('#1f77b4')  # Blue
+            node_colors.append('#1f77b4')
             node_sizes.append(6)
-            
         node_text.append(txt)
 
-    fig.add_trace(go.Scatter(
-        x=map_nodes_df["X"], y=map_nodes_df["Y"],
-        mode='markers', hoverinfo='text', text=node_text,
+    fig_map.add_trace(go.Scatter(
+        x=map_nodes_df["X"], y=map_nodes_df["Y"], mode='markers', hoverinfo='text', text=node_text,
         marker=dict(showscale=False, color=node_colors, size=node_sizes, line_width=1, line_color='black'),
         name='Grid Nodes (Priorities)'
-    ), row=1, col=1)
+    ))
 
-    # Substation
     if not map_nodes_df.empty:
         substation = map_nodes_df.iloc[0]
-        fig.add_trace(go.Scatter(x=[substation["X"]], y=[substation["Y"]], mode='markers',
+        fig_map.add_trace(go.Scatter(x=[substation["X"]], y=[substation["Y"]], mode='markers',
                                  marker=dict(symbol='star', size=18, color='gold', line=dict(width=2, color='black')),
-                                 name='Main Substation', hovertext="Main Substation"), row=1, col=1)
+                                 name='Main Substation', hovertext="Main Substation"))
 
-    # Grid Loss Annotation
     event_mask = network_case.get("grid_availability_profile", np.ones(horizon)) == 0
     if event_mask.any():
-        fig.add_annotation(
-            x=0.5, y=0.95, xref="x domain", yref="y domain",
+        fig_map.add_annotation(
+            x=0.5, y=0.95, xref="paper", yref="paper",
             text="⚠️ EVENT: MAIN SUBSTATION LOSS DETECTED ⚠️",
-            showarrow=False,
-            font=dict(family="Arial", size=14, color="white"),
-            bgcolor="rgba(255, 0, 0, 0.8)",
-            bordercolor="darkred", borderwidth=2, borderpad=4,
-            row=1, col=1
+            showarrow=False, font=dict(family="Arial", size=14, color="white"),
+            bgcolor="rgba(255, 0, 0, 0.8)", bordercolor="darkred", borderwidth=2, borderpad=4
         )
 
-    # --- PLOT 2: IEEE 1366 Table ---
-    fig.add_trace(go.Table(
-        header=dict(values=["<b>Metric</b>", "<b>IEEE 1366 Formula</b>", "<b>Numerator</b>", "<b>Denominator</b>", "<b>Calculation</b>", "<b>Final Value</b>"],
-                    fill_color='royalblue', align='left', font=dict(color='white', size=12)),
-        cells=dict(values=[
-            summary_df["Metric"], summary_df["Formula"], summary_df["Numerator"], 
-            summary_df["Denominator"], summary_df["Calculation"], summary_df["Value"]
-        ], fill_color='aliceblue', align='left', font=dict(color='black', size=11))
-    ), row=2, col=1)
+    fig_map.update_layout(title="Microgrid Physical Topology", template="plotly_white", xaxis=dict(visible=False), yaxis=dict(visible=False), height=800)
 
-    # --- PLOT 3: Resilience ENS Curves ---
-    fig.add_trace(go.Scatter(x=time_axis, y=res_ts["Total_ENS_KW"], fill='tozeroy', name="Total ENS", line=dict(color='orange')), row=3, col=1)
-    fig.add_trace(go.Scatter(x=time_axis, y=res_ts["Critical_ENS_KW"], fill='tozeroy', name="Critical ENS", line=dict(color='red')), row=3, col=1)
+    # ==========================================
+    # DATA PREP: Metrics & Dispatch (Tab 2)
+    # ==========================================
+    bess_max_kwh = buses_df["Installed_BESS_kWh"].sum() if "Installed_BESS_kWh" in buses_df.columns else 0
+    soc_pct = (sys_ts["BatterySOC_kWh"].values / max(bess_max_kwh, 1.0)) * 100
 
-    # --- PLOT 4: Stacked Bar Dispatch & SOC ---
+    fig_metrics = make_subplots(
+        rows=3, cols=1, 
+        specs=[[{"type": "table"}], [{"type": "xy"}], [{"type": "xy", "secondary_y": True}]],
+        subplot_titles=("IEEE Std 1366-2012 Metrics", "Resilience Performance (Energy Not Supplied)", "Operational Dispatch & BESS"),
+        row_heights=[0.2, 0.3, 0.5], vertical_spacing=0.08
+    )
+
+    fig_metrics.add_trace(go.Table(
+        header=dict(values=["<b>Metric</b>", "<b>Formula</b>", "<b>Numerator</b>", "<b>Denominator</b>", "<b>Calculation</b>", "<b>Final Value</b>"],
+                    fill_color='royalblue', align='left', font=dict(color='white')),
+        cells=dict(values=[summary_df["Metric"], summary_df["Formula"], summary_df["Numerator"], 
+                           summary_df["Denominator"], summary_df["Calculation"], summary_df["Value"]], 
+                   fill_color='aliceblue', align='left')
+    ), row=1, col=1)
+
+    fig_metrics.add_trace(go.Scatter(x=time_axis, y=res_ts["Total_ENS_KW"], fill='tozeroy', name="Total ENS", line=dict(color='orange')), row=2, col=1)
+    fig_metrics.add_trace(go.Scatter(x=time_axis, y=res_ts["Critical_ENS_KW"], fill='tozeroy', name="Critical ENS", line=dict(color='red')), row=2, col=1)
+
     bess_charge = np.where(sys_ts["BatteryDispatchKW"] < 0, np.abs(sys_ts["BatteryDispatchKW"]), 0)
     bess_discharge = np.maximum(0, sys_ts["BatteryDispatchKW"])
     
-    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["GridImportKW"], name="Grid Import", marker_color='gray'), row=4, col=1)
-    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["PVGenerationKW"], name="PV Gen", marker_color='gold'), row=4, col=1)
-    fig.add_trace(go.Bar(x=time_axis, y=sys_ts["WindGenerationKW"], name="Wind Gen", marker_color='lightblue'), row=4, col=1)
-    fig.add_trace(go.Bar(x=time_axis, y=bess_discharge, name="BESS Discharge", marker_color='lightgreen'), row=4, col=1)
-    fig.add_trace(go.Bar(x=time_axis, y=-bess_charge, name="BESS Charge", marker_color='darkgreen'), row=4, col=1)
-    
-    fig.add_trace(go.Scatter(x=time_axis, y=sys_ts["TotalLoadKW"], name="Total Demand", mode='lines', line=dict(color='black', width=2)), row=4, col=1)
-    fig.add_trace(go.Scatter(x=time_axis, y=soc_pct, name="Battery SOC (%)", mode='lines', line=dict(color='purple', width=2)), row=4, col=1, secondary_y=True)
+    fig_metrics.add_trace(go.Bar(x=time_axis, y=sys_ts["GridImportKW"], name="Grid Import", marker_color='gray'), row=3, col=1)
+    fig_metrics.add_trace(go.Bar(x=time_axis, y=sys_ts["PVGenerationKW"], name="PV Gen", marker_color='gold'), row=3, col=1)
+    fig_metrics.add_trace(go.Bar(x=time_axis, y=sys_ts["WindGenerationKW"], name="Wind Gen", marker_color='lightblue'), row=3, col=1)
+    fig_metrics.add_trace(go.Bar(x=time_axis, y=bess_discharge, name="BESS Discharge", marker_color='lightgreen'), row=3, col=1)
+    fig_metrics.add_trace(go.Bar(x=time_axis, y=-bess_charge, name="BESS Charge", marker_color='darkgreen'), row=3, col=1)
+    fig_metrics.add_trace(go.Scatter(x=time_axis, y=sys_ts["TotalLoadKW"], name="Total Demand", mode='lines', line=dict(color='black', width=2)), row=3, col=1)
+    fig_metrics.add_trace(go.Scatter(x=time_axis, y=soc_pct, name="Battery SOC (%)", mode='lines', line=dict(color='purple', width=2)), row=3, col=1, secondary_y=True)
 
-    # CORREÇÃO DO FUNDO VERMELHO: O sombreamento agora é aplicado estritamente aos gráficos inferiores
     if event_mask.any():
         event_starts = res_ts.index[event_mask & ~pd.Series(event_mask).shift(1).fillna(False)].tolist()
         event_ends = res_ts.index[event_mask & ~pd.Series(event_mask).shift(-1).fillna(False)].tolist()
         for s, e in zip(event_starts, event_ends):
-            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x3", yref="y3 domain", fillcolor="red", opacity=0.1, line_width=0)
-            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x4", yref="y4 domain", fillcolor="red", opacity=0.1, line_width=0)
-            fig.add_annotation(x=s, y=0.95, xref="x3", yref="y3 domain", text="Grid Event", showarrow=False, xanchor="left", font=dict(color="red"))
+            fig_metrics.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x2", yref="y2 domain", fillcolor="red", opacity=0.1, line_width=0)
+            fig_metrics.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x3", yref="y3 domain", fillcolor="red", opacity=0.1, line_width=0)
 
-    # Formatting
-    fig.update_layout(
-        title_text="Microgrid Planning, Reliability & Resilience Dashboard", 
-        height=1400, 
-        template="plotly_white",
-        barmode='relative',
-        hovermode="x unified"
-    )
-    
-    fig.update_xaxes(visible=False, row=1, col=1)
-    fig.update_yaxes(visible=False, row=1, col=1)
-    
-    fig.update_yaxes(title_text="ENS (kW)", row=3, col=1)
-    fig.update_yaxes(title_text="Power (kW)", row=4, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="SOC (%)", row=4, col=1, secondary_y=True, range=[0, 105])
-    fig.update_xaxes(title_text="Time (Hours)", row=4, col=1)
+    fig_metrics.update_layout(height=1000, template="plotly_white", barmode='relative', hovermode="x unified")
+    fig_metrics.update_yaxes(title_text="Power (kW)", row=3, col=1, secondary_y=False)
+    fig_metrics.update_yaxes(title_text="SOC (%)", row=3, col=1, secondary_y=True, range=[0, 105])
 
-    fig.show()
+    # ==========================================
+    # DASH APP LAYOUT (TABS)
+    # ==========================================
+    app = dash.Dash(__name__)
+    
+    app.layout = html.Div([
+        html.H1("Microgrid Reliability & Resilience Dashboard", style={'textAlign': 'center', 'fontFamily': 'Arial'}),
+        dcc.Tabs([
+            dcc.Tab(label='Topology & Event Map', children=[
+                dcc.Graph(figure=fig_map, style={'height': '85vh'})
+            ]),
+            dcc.Tab(label='IEEE 1366 Metrics & Operations', children=[
+                dcc.Graph(figure=fig_metrics, style={'height': '85vh'})
+            ]),
+        ])
+    ])
+
+    print("Starting Dashboard on http://127.0.0.1:8050/")
+    app.run(debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     imported_data = load_network_from_master()
@@ -1974,9 +1951,5 @@ if __name__ == "__main__":
     event_config = configure_events_interactively()
     apply_event(network_case, event_config)
     optimization_output = run_stochastic_simulation(network_case)
-
-    # 5. Evaluate Metrics (Selective Load Shedding, IEEE 1366, Exports Excel)
     metrics_output = evaluate_metrics(network_case, optimization_output)
-    
-    # 6. Show Interactive Dashboard (Plotly HTML)
     visualize_interactive_dashboard(network_case, optimization_output, metrics_output)
