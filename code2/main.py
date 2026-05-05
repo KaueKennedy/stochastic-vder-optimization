@@ -41,20 +41,20 @@ CONFIG = {
         "solar_pv": {
             "capex_usd_kw": 1200.0,
             "opex_usd_kw_yr": 15.0,
-            "max_install_kw_per_bus": 500.0
+            "max_install_kw_per_bus":50.0
         },
         "wind": {
             "capex_usd_kw": 1500.0,
             "opex_usd_kw_yr": 20.0,
-            "max_install_kw_per_bus": 1000.0
+            "max_install_kw_per_bus": 50.0
         },
         "battery_storage": {
-            "capex_usd_kwh": 350.0,
+            "capex_usd_kwh": 600.0,
             "opex_usd_kwh_yr": 5.0,
             "efficiency_round_trip": 0.85,
-            "soc_min": 0.20,
+            "soc_min": 0.4,
             "soc_max": 0.95,
-            "max_install_kwh_per_bus": 2000.0
+            "max_install_kwh_per_bus": 5.0
         }
     }
 }
@@ -1326,85 +1326,143 @@ def run_stochastic_simulation(network_case):
     load_profile = np.asarray(network_case["load_profile"], dtype=float)
     solar_profile = np.asarray(network_case["solar_profile"], dtype=float)
     wind_profile = np.asarray(network_case["wind_profile"], dtype=float)
-    price_profile = np.asarray(network_case["price_profile"], dtype=float)
 
     total_base_load_kw = float(network_case["total_base_load_kw"])
     total_base_load_kvar = float(network_case["total_base_load_kvar"])
     peak_load = float(network_case["peak_load_kw"])
 
-    system_pv_kw = float(network_case["existing_pv_kw"] + network_case["new_pv_kw"])
-    system_wind_kw = float(network_case["existing_wind_kw"] + network_case["new_wind_kw"])
+    system_pv_kw = float(network_case["existing_pv_kw"]) + network_case["new_pv_kw"]
+    system_wind_kw = float(network_case["existing_wind_kw"]) + network_case["new_wind_kw"]
     bess_total_kwh = float(network_case["bess_total_kwh"])
 
     total_load_kw_series = total_base_load_kw * load_profile
     pv_generation_series = system_pv_kw * solar_profile
     wind_generation_series = system_wind_kw * wind_profile
-    total_generation_series = pv_generation_series + wind_generation_series
-    base_net_load = total_load_kw_series - total_generation_series
+    
+    grid_avail = network_case.get("grid_availability_profile", np.ones(horizon))
 
-    write_debug_log("Executando arbitragem/peak shaving do BESS...")
+    write_debug_log("Executando arbitragem de mercado e controle do BESS...")
 
-    battery_eff = config["economic_parameters"]["battery_storage"]["efficiency_round_trip"]
     allow_storage = config["optimization"]["allow_storage"]
     allow_curtailment = config["optimization"]["allow_curtailment"]
+    
+    batt_cfg = config["economic_parameters"]["battery_storage"]
+    eff_rt = batt_cfg["efficiency_round_trip"]
+    eff_charge = np.sqrt(eff_rt)
+    eff_discharge = np.sqrt(eff_rt)
+    
+    soc_min_pct = batt_cfg["soc_min"]
+    soc_max_pct = batt_cfg["soc_max"]
+    c_rate_limit = batt_cfg.get("c_rate", 0.5)
 
-    battery_soc_max = bess_total_kwh * config["economic_parameters"]["battery_storage"]["soc_max"]
-    battery_soc_min = bess_total_kwh * config["economic_parameters"]["battery_storage"]["soc_min"]
-    current_soc = battery_soc_min
+    soc_min_kwh = bess_total_kwh * soc_min_pct
+    soc_max_kwh = bess_total_kwh * soc_max_pct
+    max_kw_flow = bess_total_kwh * c_rate_limit
 
+    current_soc = bess_total_kwh * 0.5 
+    
     battery_dispatch_kw = np.zeros(horizon)
     soc_series = np.zeros(horizon)
     grid_import_kw = np.zeros(horizon)
     curtailed_kw = np.zeros(horizon)
 
-    valid_prices = not np.all(np.isnan(price_profile))
-    if valid_prices:
-        p_charge_limit = np.nanpercentile(price_profile, 20)
-        p_discharge_limit = np.nanpercentile(price_profile, 80)
-    else:
-        p_charge_limit = np.nanpercentile(base_net_load, 20)
-        p_discharge_limit = np.nanpercentile(base_net_load, 80)
-
-    bess_max_kw = bess_total_kwh / 4.0 if bess_total_kwh > 0 else 0.0
+    # --- INTELIGÊNCIA DE MERCADO (ARBITRAGEM) ---
+    price_profile = np.asarray(network_case.get("price_profile", np.full(horizon, 55.0)), dtype=float)
+    price_profile = np.nan_to_num(price_profile, nan=55.0)
+    
+    # Define os limites de preço (Top 25% para VENDER, Bottom 25% para COMPRAR)
+    p_low = np.percentile(price_profile, 25)
+    p_high = np.percentile(price_profile, 75)
+    if p_high <= p_low:
+        p_high = p_low + 1.0 # Previne empate lógico se o preço for fixo (55.0 constante)
 
     for t in range(horizon):
-        net_load = base_net_load[t]
-        control_signal = price_profile[t] if valid_prices else net_load
-        bess_kw = 0.0
+        net_load = total_load_kw_series[t] - pv_generation_series[t] - wind_generation_series[t]
+        current_price = price_profile[t]
+        
+        if grid_avail[t] == 1:
+            if current_price <= p_low and allow_storage:
+                # COMPRAR NA BAIXA: Carregar a bateria
+                space_kwh = soc_max_kwh - current_soc
+                charge_kw = min(max_kw_flow, space_kwh / eff_charge)
+                battery_dispatch_kw[t] = -charge_kw
+                current_soc += charge_kw * eff_charge
+                
+                raw_import = net_load + charge_kw
+                if raw_import < 0:
+                    # Se mesmo carregando tudo ainda sobrar energia renovável livre: Corta (Curtailment)
+                    grid_import_kw[t] = 0
+                    curtailed_kw[t] = -raw_import
+                else:
+                    grid_import_kw[t] = raw_import
+                    curtailed_kw[t] = 0
 
-        if control_signal >= p_discharge_limit and allow_storage and current_soc > battery_soc_min:
-            available_kwh = current_soc - battery_soc_min
-            bess_kw = min(bess_max_kw, available_kwh / dt)
+            elif current_price >= p_high and allow_storage:
+                # VENDER NA ALTA (Mas travado no limite ZERO EXPORT para a Subestação)
+                if net_load > 0:
+                    available_kwh = current_soc - soc_min_kwh
+                    # A mágica do Zero-Export: a descarga não pode ser maior que o net_load
+                    discharge_kw = min(net_load, max_kw_flow, available_kwh * eff_discharge) 
+                    battery_dispatch_kw[t] = discharge_kw
+                    current_soc -= (discharge_kw / eff_discharge)
+                    
+                    grid_import_kw[t] = net_load - discharge_kw
+                    curtailed_kw[t] = 0
+                else:
+                    # Se a carga é negativa (sobrando sol/vento), NÃO descarrega a bateria (pois exportaria). 
+                    # Ao invés disso, carrega o excesso limpo se couber.
+                    excess = -net_load
+                    space_kwh = soc_max_kwh - current_soc
+                    charge_kw = min(excess, max_kw_flow, space_kwh / eff_charge)
+                    battery_dispatch_kw[t] = -charge_kw
+                    current_soc += charge_kw * eff_charge
+                    
+                    grid_import_kw[t] = 0
+                    curtailed_kw[t] = excess - charge_kw
 
-            if allow_curtailment and bess_kw > net_load and net_load > 0:
-                bess_kw = net_load
-
-        elif control_signal <= p_charge_limit and allow_storage and current_soc < battery_soc_max:
-            space_kwh = battery_soc_max - current_soc
-            bess_kw = -min(bess_max_kw, space_kwh / (dt * battery_eff))
-
-        if net_load < 0 and allow_storage and current_soc < battery_soc_max:
-            space_kwh = battery_soc_max - current_soc
-            current_charge_kw = abs(min(0.0, bess_kw))
-            additional_charge_kw = min(abs(net_load), space_kwh / (dt * battery_eff) - current_charge_kw)
-            if additional_charge_kw > 0:
-                bess_kw = -max(current_charge_kw, additional_charge_kw)
-
-        if bess_kw >= 0:
-            current_soc -= bess_kw * dt
+            else:
+                # PREÇO MÉDIO: Operação conservadora
+                if net_load > 0:
+                    grid_import_kw[t] = net_load
+                    battery_dispatch_kw[t] = 0
+                    curtailed_kw[t] = 0
+                else:
+                    excess = -net_load
+                    space_kwh = soc_max_kwh - current_soc
+                    if allow_storage and space_kwh > 0:
+                        charge_kw = min(excess, max_kw_flow, space_kwh / eff_charge)
+                        battery_dispatch_kw[t] = -charge_kw
+                        current_soc += charge_kw * eff_charge
+                        
+                        grid_import_kw[t] = 0
+                        curtailed_kw[t] = excess - charge_kw 
+                    else:
+                        battery_dispatch_kw[t] = 0
+                        grid_import_kw[t] = 0
+                        curtailed_kw[t] = excess
         else:
-            current_soc += abs(bess_kw) * battery_eff * dt
-
-        current_soc = min(max(current_soc, battery_soc_min), battery_soc_max) if bess_total_kwh > 0 else 0.0
-
-        final_import = net_load - bess_kw
-
-        if final_import < 0 and allow_curtailment:
-            curtailed_kw[t] = abs(final_import)
-            final_import = 0.0
-
-        grid_import_kw[t] = final_import
-        battery_dispatch_kw[t] = bess_kw
+            # ILHAMENTO (Grid Offline): Subestacao indisponível, mesma regra
+            grid_import_kw[t] = 0
+            if net_load > 0:
+                available_kwh = current_soc - soc_min_kwh
+                if allow_storage and available_kwh > 0:
+                    discharge_kw = min(net_load, max_kw_flow, available_kwh * eff_discharge)
+                    battery_dispatch_kw[t] = discharge_kw
+                    current_soc -= (discharge_kw / eff_discharge)
+                else:
+                    battery_dispatch_kw[t] = 0
+            else:
+                excess = -net_load
+                space_kwh = soc_max_kwh - current_soc
+                if allow_storage and space_kwh > 0:
+                    charge_kw = min(excess, max_kw_flow, space_kwh / eff_charge)
+                    battery_dispatch_kw[t] = -charge_kw
+                    current_soc += charge_kw * eff_charge
+                    curtailed_kw[t] = excess - charge_kw
+                else:
+                    battery_dispatch_kw[t] = 0
+                    curtailed_kw[t] = excess
+                        
         soc_series[t] = current_soc
 
     write_debug_log("Montando dataframes de saida...")
@@ -1421,87 +1479,109 @@ def run_stochastic_simulation(network_case):
     })
 
     bus_names = buses_enriched_df["BusName"].values
-    p_shares = (
-        buses_enriched_df["BaseLoadKW"].values / total_base_load_kw
-        if total_base_load_kw > 0 else np.zeros(len(bus_names))
-    )
-    q_shares = (
-        buses_enriched_df["BaseLoadKvar"].values / total_base_load_kvar
-        if total_base_load_kvar > 0 else np.zeros(len(bus_names))
-    )
+    p_shares = buses_enriched_df["BaseLoadKW"].values / total_base_load_kw if total_base_load_kw > 0 else np.zeros(len(bus_names))
+    q_shares = buses_enriched_df["BaseLoadKvar"].values / total_base_load_kvar if total_base_load_kvar > 0 else np.zeros(len(bus_names))
 
-    p_kw = np.outer(p_shares, grid_import_kw.ravel())
-    q_kvar = np.outer(q_shares, (total_base_load_kvar * load_profile).ravel())
+    p_kw = np.outer(p_shares, grid_import_kw).ravel()
+    q_kvar = np.outer(q_shares, total_base_load_kvar * load_profile).ravel()
+
     s_kva = np.sqrt(p_kw**2 + q_kvar**2)
-    pf_series = np.divide(p_kw, s_kva, out=np.ones_like(p_kw), where=s_kva != 0)
+    pf_series = np.divide(p_kw, s_kva, out=np.ones_like(p_kw), where=(s_kva != 0))
 
     safe_peaks = np.maximum(1e-6, peak_load * p_shares)
-    # Reformata safe_peaks para (436, 1) para fazer a divisao espalhando pelas 8760 colunas
     safe_peaks_2d = safe_peaks.reshape(-1, 1)
-    v_pu = 1.0 - 0.05 * (p_kw / safe_peaks_2d)
-    v_pu = np.clip(v_pu, config["voltage_limits_pu"]["min"], config["voltage_limits_pu"]["max"])
+    
+    volt_limits = config.get("voltagelimits_pu", config.get("voltagelimitspu", {"min": 0.95, "max": 1.05}))
+    vmin = volt_limits.get("min", 0.95)
+    vmax = volt_limits.get("max", 1.05)
+
+    v_pu = 1.0 - 0.05 * (p_kw / safe_peaks_2d.ravel().repeat(horizon))
+    v_pu = np.clip(v_pu, vmin, vmax)
+
+    total_bus_rows = len(bus_names) * horizon
 
     bus_time_df = pd.DataFrame({
         "TimeStep": np.tile(np.arange(horizon), len(bus_names)),
         "BusName": np.repeat(bus_names, horizon),
-        "Vpu": v_pu.ravel(),
-        "PkW": p_kw.ravel(),
-        "Qkvar": q_kvar.ravel(),
-        "SkVA": s_kva.ravel(),
-        "PowerFactor": pf_series.ravel(),
-        "FrequencyHz": default_freq
+        "V_pu": v_pu,
+        "P_kW": p_kw,
+        "Q_kvar": q_kvar,
+        "S_kVA": s_kva,
+        "PowerFactor": pf_series,
+        "Frequency_Hz": np.full(total_bus_rows, default_freq)
     })
 
-    line_names = lines_df["Name"].values if not lines_df.empty and "Name" in lines_df.columns else np.array([f"Line_{i}" for i in range(len(lines_df))])
-    norm_amps = lines_df["NormAmps"].fillna(1000.0).values if not lines_df.empty and "NormAmps" in lines_df.columns else np.full(len(lines_df), 1000.0)
-    r1_vals = lines_df["R1"].fillna(0.01).values if not lines_df.empty and "R1" in lines_df.columns else np.full(len(lines_df), 0.01)
+    # --- PROTEÇÃO ABSOLUTA: Lida com segurança quando grid_import for negativo (Venda) ---
+    base_current_index = np.abs(grid_import_kw) / max(1e-6, peak_load)
 
-    base_current_index = grid_import_kw / max(1e-6, peak_load)
-    
+    # ------------------ LINES ------------------
+    line_names = lines_df["Name"].values if (not lines_df.empty and "Name" in lines_df.columns) else np.array([])
     if len(line_names) > 0:
-        i_amps = np.outer(norm_amps * 0.4, base_current_index.ravel())
-        limit_amps_arr = np.repeat(norm_amps, horizon)
+        norm_amps = lines_df["NormAmps"].fillna(1000.0).values
+        r1_vals = lines_df["R1"].fillna(0.01).values
+
+        i_amps_2d = np.outer(norm_amps * 0.4, base_current_index)
+        limit_amps_2d = np.tile(norm_amps, (horizon, 1)).T
+        r1_vals_2d = np.tile(r1_vals, (horizon, 1)).T
         
+        ploss_2d = (i_amps_2d**2) * r1_vals_2d * 0.001
+
         lines_time_df = pd.DataFrame({
             "TimeStep": np.tile(np.arange(horizon), len(line_names)),
             "LineName": np.repeat(line_names, horizon),
-            "CurrentAmps": i_amps.ravel(),
-            "LimitAmps": limit_amps_arr,
-            "LoadingPercent": (i_amps.ravel() / limit_amps_arr) * 100,
-            "PLosskW": (i_amps**2 * np.repeat(r1_vals, horizon).reshape(len(r1_vals), horizon) * 0.001).ravel(),
-            "Overloaded": i_amps.ravel() > limit_amps_arr
+            "CurrentAmps": i_amps_2d.ravel(),
+            "LimitAmps": limit_amps_2d.ravel(),
+            "LoadingPercent": (i_amps_2d.ravel() / limit_amps_2d.ravel()) * 100,
+            "PLoss_kW": ploss_2d.ravel(),
+            "Overloaded": i_amps_2d.ravel() > limit_amps_2d.ravel()
         })
     else:
         lines_time_df = pd.DataFrame()
 
-    transf_names = transformers_df["Name"].values if not transformers_df.empty and "Name" in transformers_df.columns else np.array([f"Trafo_{i}" for i in range(len(transformers_df))])
-    kva_caps = transformers_df["kVA"].fillna(1000.0).values if not transformers_df.empty and "kVA" in transformers_df.columns else np.full(len(transformers_df), 1000.0)
-
+    # ------------------ TRANSFORMERS ------------------
+    transf_names = transformers_df["Name"].values if (not transformers_df.empty and "Name" in transformers_df.columns) else np.array([])
     if len(transf_names) > 0:
-        s_flow = np.outer(kva_caps * 0.6, base_current_index.ravel())
-        limit_kva_arr = np.repeat(kva_caps, horizon)
-
+        # Proteção Universal: Abrange qualquer nome gerado para Winding kVA
+        if "W1KVA" in transformers_df.columns:
+            kva_caps = transformers_df["W1KVA"].fillna(1000.0).values
+        elif "kVA" in transformers_df.columns:
+            kva_caps = transformers_df["kVA"].fillna(1000.0).values
+        elif "KVA" in transformers_df.columns:
+            kva_caps = transformers_df["KVA"].fillna(1000.0).values
+        elif "kva" in transformers_df.columns:
+            kva_caps = transformers_df["kva"].fillna(1000.0).values
+        else:
+            kva_caps = np.full(len(transf_names), 1000.0)
+        
+        s_flow_2d = np.outer(kva_caps * 0.6, base_current_index)
+        limit_kva_2d = np.tile(kva_caps, (horizon, 1)).T
+        
         transf_time_df = pd.DataFrame({
             "TimeStep": np.tile(np.arange(horizon), len(transf_names)),
             "TransfName": np.repeat(transf_names, horizon),
-            "SFlowkVA": s_flow.ravel(),
-            "LimitkVA": limit_kva_arr,
-            "LoadingPercent": (s_flow.ravel() / limit_kva_arr) * 100,
-            "Overloaded": s_flow.ravel() > limit_kva_arr
+            "SFlow_kVA": s_flow_2d.ravel(),
+            "Limit_kVA": limit_kva_2d.ravel(),
+            "LoadingPercent": (s_flow_2d.ravel() / limit_kva_2d.ravel()) * 100,
+            "Overloaded": s_flow_2d.ravel() > limit_kva_2d.ravel()
         })
     else:
         transf_time_df = pd.DataFrame()
 
-    der_locations_df = buses_enriched_df[
-        ["BusName", "IsLowVoltage", "Installed_PV_KW", "Installed_Wind_KW", "Installed_BESS_kWh"]
-    ].copy() if not buses_enriched_df.empty else pd.DataFrame()
-
+    # ------------------ DER LOCATIONS ------------------
+    desired_cols = ["BusName", "IsLowVoltage", "InstalledPVKW", "InstalledWindKW", "InstalledBESSkWh"]
+    available_cols = [col for col in desired_cols if col in buses_enriched_df.columns]
+    
+    der_locations_df = buses_enriched_df[available_cols].copy() if not buses_enriched_df.empty else pd.DataFrame()
+    
     if not der_locations_df.empty:
-        der_locations_df = der_locations_df[
-            (der_locations_df["Installed_PV_KW"] > 0) |
-            (der_locations_df["Installed_Wind_KW"] > 0) |
-            (der_locations_df["Installed_BESS_kWh"] > 0)
-        ]
+        mask = pd.Series(False, index=der_locations_df.index)
+        if "InstalledPVKW" in der_locations_df.columns:
+            mask = mask | (der_locations_df["InstalledPVKW"] > 0)
+        if "InstalledWindKW" in der_locations_df.columns:
+            mask = mask | (der_locations_df["InstalledWindKW"] > 0)
+        if "InstalledBESSkWh" in der_locations_df.columns:
+            mask = mask | (der_locations_df["InstalledBESSkWh"] > 0)
+        der_locations_df = der_locations_df[mask]
 
     scalar_results_df = pd.DataFrame([
         {"Metric": "HorizonSteps", "Value": horizon},
@@ -1512,7 +1592,8 @@ def run_stochastic_simulation(network_case):
         {"Metric": "TotalBaseLoadKW", "Value": total_base_load_kw},
         {"Metric": "TotalBaseLoadKvar", "Value": total_base_load_kvar},
         {"Metric": "TotalCurtailedEnergykWh", "Value": float(np.sum(curtailed_kw) * dt)},
-        {"Metric": "TotalGridImportEnergykWh", "Value": float(np.sum(grid_import_kw) * dt)}
+        {"Metric": "TotalGridImportEnergykWh", "Value": float(np.sum(grid_import_kw[grid_import_kw > 0]) * dt)},
+        {"Metric": "TotalGridExportEnergykWh", "Value": float(np.sum(np.abs(grid_import_kw[grid_import_kw < 0])) * dt)}
     ])
 
     write_debug_log("Salvando arquivos auxiliares...")
@@ -1527,16 +1608,14 @@ def run_stochastic_simulation(network_case):
         with pd.ExcelWriter(config["output_xlsx_path"], engine="openpyxl") as writer:
             scalar_results_df.to_excel(writer, sheet_name="ScalarResults", index=False)
             system_time_df.to_excel(writer, sheet_name="SystemTimeSeries", index=False)
-            
             if not der_locations_df.empty:
                 der_locations_df.to_excel(writer, sheet_name="DERLocations", index=False)
-                
             if not buses_enriched_df.empty:
                 buses_enriched_df.to_excel(writer, sheet_name="BusesExact", index=False)
         write_debug_log("Simulacao finalizada com exito.")
     except PermissionError:
         write_debug_log("ERRO DE PERMISSAO: o arquivo Excel de destino estava aberto durante a geracao.")
-
+        
     optimization_output = {
         "config_used": config,
         "scalar_results": scalar_results_df,
@@ -1548,7 +1627,7 @@ def run_stochastic_simulation(network_case):
         "buses_exact": buses_enriched_df,
         "output_xlsx_path": config["output_xlsx_path"]
     }
-
+    
     return optimization_output
 
 def evaluate_metrics(network_case, opt_output):
