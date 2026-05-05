@@ -1327,15 +1327,34 @@ def run_stochastic_simulation(network_case):
     solar_profile = np.asarray(network_case["solar_profile"], dtype=float)
     wind_profile = np.asarray(network_case["wind_profile"], dtype=float)
 
+    # CORREÇÃO DA CARGA PLANA: Se o perfil extraído do Excel for constante (preenchido com 1.0),
+    # nós geramos uma curva sintética diária/sazonal realista para testes estocásticos.
+    if len(np.unique(load_profile)) < 100 or np.all(load_profile[500:] == 1.0):
+        t_array = np.arange(horizon)
+        daily_seasonality = 0.75 + 0.25 * np.sin(2 * np.pi * (t_array - 8) / 24) # Pico fim da tarde
+        yearly_seasonality = 0.9 + 0.1 * np.cos(4 * np.pi * t_array / horizon)
+        noise = np.random.normal(0, 0.03, horizon)
+        load_profile = np.clip(daily_seasonality * yearly_seasonality + noise, 0.4, 1.2)
+
     total_base_load_kw = float(network_case["total_base_load_kw"])
     total_base_load_kvar = float(network_case["total_base_load_kvar"])
-    peak_load = float(network_case["peak_load_kw"])
+    
+    total_load_kw_series = total_base_load_kw * load_profile
+    peak_load = max(float(network_case["peak_load_kw"]), float(np.max(total_load_kw_series)))
 
+    # 1) CORREÇÃO: O perfil de carga agora aplica a variabilidade (Load Profile real) hora a hora
+    if load_profile.ndim > 1:
+        load_profile = load_profile.ravel()[:horizon]
+        
+    total_load_kw_series = total_base_load_kw * load_profile
+    
+    # E atualize o pico para refletir a curva de variabilidade:
+    peak_load = max(float(network_case["peak_load_kw"]), float(np.max(total_load_kw_series)))
+    
     system_pv_kw = float(network_case["existing_pv_kw"]) + network_case["new_pv_kw"]
     system_wind_kw = float(network_case["existing_wind_kw"]) + network_case["new_wind_kw"]
     bess_total_kwh = float(network_case["bess_total_kwh"])
 
-    total_load_kw_series = total_base_load_kw * load_profile
     pv_generation_series = system_pv_kw * solar_profile
     wind_generation_series = system_wind_kw * wind_profile
     
@@ -1357,7 +1376,13 @@ def run_stochastic_simulation(network_case):
 
     soc_min_kwh = bess_total_kwh * soc_min_pct
     soc_max_kwh = bess_total_kwh * soc_max_pct
-    max_kw_flow = bess_total_kwh * c_rate_limit
+    
+    # Limite físico da bateria (C-rate)
+    bess_kw_flow = bess_total_kwh * c_rate_limit
+    
+    # 2) CORREÇÃO: Limite de Rede (Para não sobrecarregar os trafos na hora da arbitragem de compra)
+    # A bateria NUNCA poderá sugar da rede mais do que o pico original do sistema (Peak Load)
+    max_kw_flow = min(bess_kw_flow, peak_load * 0.8) # Trava em 80% da capacidade do trafo pra dar margem de segurança
 
     current_soc = bess_total_kwh * 0.5 
     
@@ -1366,15 +1391,13 @@ def run_stochastic_simulation(network_case):
     grid_import_kw = np.zeros(horizon)
     curtailed_kw = np.zeros(horizon)
 
-    # --- INTELIGÊNCIA DE MERCADO (ARBITRAGEM) ---
     price_profile = np.asarray(network_case.get("price_profile", np.full(horizon, 55.0)), dtype=float)
     price_profile = np.nan_to_num(price_profile, nan=55.0)
     
-    # Define os limites de preço (Top 25% para VENDER, Bottom 25% para COMPRAR)
     p_low = np.percentile(price_profile, 25)
     p_high = np.percentile(price_profile, 75)
     if p_high <= p_low:
-        p_high = p_low + 1.0 # Previne empate lógico se o preço for fixo (55.0 constante)
+        p_high = p_low + 1.0
 
     for t in range(horizon):
         net_load = total_load_kw_series[t] - pv_generation_series[t] - wind_generation_series[t]
@@ -1382,15 +1405,19 @@ def run_stochastic_simulation(network_case):
         
         if grid_avail[t] == 1:
             if current_price <= p_low and allow_storage:
-                # COMPRAR NA BAIXA: Carregar a bateria
+                # COMPRAR NA BAIXA (Zero-Export + Proteção do Trafo em max_kw_flow)
                 space_kwh = soc_max_kwh - current_soc
                 charge_kw = min(max_kw_flow, space_kwh / eff_charge)
+                
+                # Se a soma da carga local + bateria exceder a capacidade da rede, limita a bateria
+                if (net_load + charge_kw) > peak_load:
+                    charge_kw = max(0, peak_load - net_load)
+                    
                 battery_dispatch_kw[t] = -charge_kw
                 current_soc += charge_kw * eff_charge
                 
                 raw_import = net_load + charge_kw
                 if raw_import < 0:
-                    # Se mesmo carregando tudo ainda sobrar energia renovável livre: Corta (Curtailment)
                     grid_import_kw[t] = 0
                     curtailed_kw[t] = -raw_import
                 else:
@@ -1398,10 +1425,9 @@ def run_stochastic_simulation(network_case):
                     curtailed_kw[t] = 0
 
             elif current_price >= p_high and allow_storage:
-                # VENDER NA ALTA (Mas travado no limite ZERO EXPORT para a Subestação)
+                # VENDER NA ALTA
                 if net_load > 0:
                     available_kwh = current_soc - soc_min_kwh
-                    # A mágica do Zero-Export: a descarga não pode ser maior que o net_load
                     discharge_kw = min(net_load, max_kw_flow, available_kwh * eff_discharge) 
                     battery_dispatch_kw[t] = discharge_kw
                     current_soc -= (discharge_kw / eff_discharge)
@@ -1409,8 +1435,6 @@ def run_stochastic_simulation(network_case):
                     grid_import_kw[t] = net_load - discharge_kw
                     curtailed_kw[t] = 0
                 else:
-                    # Se a carga é negativa (sobrando sol/vento), NÃO descarrega a bateria (pois exportaria). 
-                    # Ao invés disso, carrega o excesso limpo se couber.
                     excess = -net_load
                     space_kwh = soc_max_kwh - current_soc
                     charge_kw = min(excess, max_kw_flow, space_kwh / eff_charge)
@@ -1421,7 +1445,7 @@ def run_stochastic_simulation(network_case):
                     curtailed_kw[t] = excess - charge_kw
 
             else:
-                # PREÇO MÉDIO: Operação conservadora
+                # PREÇO MÉDIO
                 if net_load > 0:
                     grid_import_kw[t] = net_load
                     battery_dispatch_kw[t] = 0
@@ -1433,7 +1457,6 @@ def run_stochastic_simulation(network_case):
                         charge_kw = min(excess, max_kw_flow, space_kwh / eff_charge)
                         battery_dispatch_kw[t] = -charge_kw
                         current_soc += charge_kw * eff_charge
-                        
                         grid_import_kw[t] = 0
                         curtailed_kw[t] = excess - charge_kw 
                     else:
@@ -1441,7 +1464,7 @@ def run_stochastic_simulation(network_case):
                         grid_import_kw[t] = 0
                         curtailed_kw[t] = excess
         else:
-            # ILHAMENTO (Grid Offline): Subestacao indisponível, mesma regra
+            # ILHAMENTO (Subestação Off)
             grid_import_kw[t] = 0
             if net_load > 0:
                 available_kwh = current_soc - soc_min_kwh
@@ -1511,10 +1534,8 @@ def run_stochastic_simulation(network_case):
         "Frequency_Hz": np.full(total_bus_rows, default_freq)
     })
 
-    # --- PROTEÇÃO ABSOLUTA: Lida com segurança quando grid_import for negativo (Venda) ---
     base_current_index = np.abs(grid_import_kw) / max(1e-6, peak_load)
 
-    # ------------------ LINES ------------------
     line_names = lines_df["Name"].values if (not lines_df.empty and "Name" in lines_df.columns) else np.array([])
     if len(line_names) > 0:
         norm_amps = lines_df["NormAmps"].fillna(1000.0).values
@@ -1538,10 +1559,8 @@ def run_stochastic_simulation(network_case):
     else:
         lines_time_df = pd.DataFrame()
 
-    # ------------------ TRANSFORMERS ------------------
     transf_names = transformers_df["Name"].values if (not transformers_df.empty and "Name" in transformers_df.columns) else np.array([])
     if len(transf_names) > 0:
-        # Proteção Universal: Abrange qualquer nome gerado para Winding kVA
         if "W1KVA" in transformers_df.columns:
             kva_caps = transformers_df["W1KVA"].fillna(1000.0).values
         elif "kVA" in transformers_df.columns:
@@ -1567,7 +1586,6 @@ def run_stochastic_simulation(network_case):
     else:
         transf_time_df = pd.DataFrame()
 
-    # ------------------ DER LOCATIONS ------------------
     desired_cols = ["BusName", "IsLowVoltage", "InstalledPVKW", "InstalledWindKW", "InstalledBESSkWh"]
     available_cols = [col for col in desired_cols if col in buses_enriched_df.columns]
     
@@ -1753,10 +1771,10 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
     try:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
-        import networkx as nx
+        import numpy as np
         import pandas as pd
     except ImportError:
-        print("Missing libraries. Run: pip install plotly networkx pandas")
+        print("Missing libraries. Run: pip install plotly pandas numpy")
         return
 
     sys_ts = opt_output["system_time_series"]
@@ -1768,36 +1786,26 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
     time_axis = np.arange(horizon)
 
     # BESS SOC %
-    bess_max_kwh = buses_df["Installed_BESS_kWh"].sum()
+    bess_max_kwh = buses_df["Installed_BESS_kWh"].sum() if "Installed_BESS_kWh" in buses_df.columns else 0
     bess_max_kwh = bess_max_kwh if bess_max_kwh > 0 else 1.0 
     soc_pct = (sys_ts["BatterySOC_kWh"].values / bess_max_kwh) * 100
 
-    # 1. Build NetworkX Graph
-    G = nx.Graph()
-    for _, row in lines_df.iterrows():
-        is_damaged = row.get("IsDamaged", False)
-        G.add_edge(row["Bus1"], row["Bus2"], damaged=is_damaged, name=row["Name"])
-        
-    for _, row in buses_df.iterrows():
-        b = row["BusName"]
-        if not G.has_node(b):
-            G.add_node(b)
-            
-        pv = row.get("Installed_PV_KW", 0)
-        wind = row.get("Installed_Wind_KW", 0)
-        bess = row.get("Installed_BESS_kWh", 0)
-        cls = row.get("ConsumerClass", "Class 3 (Residential)")
-        sens = row.get("TopologicalSensitivity", 1.0)
-        
-        G.nodes[b].update({"pv": pv, "wind": wind, "bess": bess, "cls": cls, "sens": sens, "tot_der": pv + wind})
-
-    pos = nx.kamada_kawai_layout(G)
-    try:
-        source_bus = sorted(G.degree, key=lambda x: x[1], reverse=True)[0][0]
-    except:
-        source_bus = list(G.nodes)[0]
-
-    color_map = {"Class 1 (Life/Safety)": "red", "Class 2 (Essential)": "orange", "Class 3 (Residential)": "blue"}
+    # 1. Agrupar Topologia (Consolidar Lado Alta/Baixa no mesmo lugar físico)
+    buses_df_map = buses_df.copy()
+    buses_df_map["CoordKey"] = buses_df_map["X"].round(4).astype(str) + "_" + buses_df_map["Y"].round(4).astype(str)
+    
+    agg_funcs = {
+        "Installed_PV_KW": "sum",
+        "Installed_Wind_KW": "sum",
+        "Installed_BESS_kWh": "sum",
+        "X": "first",
+        "Y": "first",
+        "BusName": lambda x: "<br>".join(x),
+        "ConsumerClass": "first",
+        "TopologicalSensitivity": "max"
+    }
+    
+    map_nodes_df = buses_df_map[buses_df_map["X"].abs() > 1e-6].groupby("CoordKey").agg(agg_funcs).reset_index()
 
     # 2. Build Subplots (4 Rows, Full Width)
     fig = make_subplots(
@@ -1820,41 +1828,89 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
 
     # --- PLOT 1: Topology Map ---
     edge_x, edge_y, damage_x, damage_y = [], [], [], []
-    for edge in G.edges(data=True):
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        if edge[2].get("damaged", False):
-            damage_x.extend([x0, x1, None])
-            damage_y.extend([y0, y1, None])
-        else:
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
+    
+    for _, row in lines_df.iterrows():
+        b1, b2 = row["Bus1"], row["Bus2"]
+        p1 = buses_df_map[buses_df_map["BusName"] == b1]
+        p2 = buses_df_map[buses_df_map["BusName"] == b2]
+        
+        if not p1.empty and not p2.empty:
+            x1, y1 = p1.iloc[0]["X"], p1.iloc[0]["Y"]
+            x2, y2 = p2.iloc[0]["X"], p2.iloc[0]["Y"]
+            
+            if abs(x1) > 1e-6 and abs(x2) > 1e-6:
+                if row.get("IsDamaged", False):
+                    damage_x.extend([x1, x2, None])
+                    damage_y.extend([y1, y2, None])
+                else:
+                    edge_x.extend([x1, x2, None])
+                    edge_y.extend([y1, y2, None])
 
+    # Normal Lines
     fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='lightgray'), hoverinfo='none', showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=damage_x, y=damage_y, mode='lines', line=dict(width=3, color='red', dash='dash'), name='Damaged Lines'), row=1, col=1)
+    
+    # Damaged Lines
+    if damage_x:
+        fig.add_trace(go.Scatter(x=damage_x, y=damage_y, mode='lines', line=dict(width=4, color='red', dash='dash'), name='⚠️ Damaged Line / Fault'), row=1, col=1)
 
-    for cls_name, color in color_map.items():
-        node_x, node_y, sizes, texts = [], [], [], []
-        for node in G.nodes():
-            nd = G.nodes[node]
-            if nd.get("cls") == cls_name:
-                node_x.append(pos[node][0])
-                node_y.append(pos[node][1])
-                sizes.append(6 + (nd["tot_der"] / 20.0)) # Scales ball size
-                
-                txt = (f"<b>Bus:</b> {node}<br><b>Class:</b> {cls_name}<br>"
-                       f"<b>Topo Sens:</b> {nd['sens']}<br>"
-                       f"<b>PV:</b> {nd['pv']} kW | <b>Wind:</b> {nd['wind']} kW<br>"
-                       f"<b>BESS:</b> {nd['bess']} kWh")
-                texts.append(txt)
-                
-        fig.add_trace(go.Scatter(x=node_x, y=node_y, mode='markers', hovertext=texts, hoverinfo="text",
-                                 marker=dict(color=color, size=sizes, line=dict(width=1, color='black')), 
-                                 name=cls_name), row=1, col=1)
-                                 
-    fig.add_trace(go.Scatter(x=[pos[source_bus][0]], y=[pos[source_bus][1]], mode='markers',
-                             marker=dict(symbol='star', size=18, color='gold', line=dict(width=2, color='black')),
-                             name='Substation', hovertext="Main Substation"), row=1, col=1)
+    # Node Colors & Priorities
+    node_text, node_colors, node_sizes = [], [], []
+    
+    for _, row in map_nodes_df.iterrows():
+        cls = row.get('ConsumerClass', 'Unknown')
+        sens = row.get('TopologicalSensitivity', 1.0)
+        
+        txt = f"<b>Node(s):</b><br>{row['BusName']}<br><b>Class:</b> {cls}<br><b>Topological Degree:</b> {sens}"
+        
+        is_der = (row.get('Installed_PV_KW',0) > 0 or row.get('Installed_Wind_KW',0) > 0 or row.get('Installed_BESS_kWh',0) > 0)
+        if is_der:
+            txt += f"<br><br><b>Installed DERs:</b>"
+            if row.get('Installed_PV_KW',0) > 0: txt += f"<br>☀️ PV: {row['Installed_PV_KW']} kW"
+            if row.get('Installed_Wind_KW',0) > 0: txt += f"<br>💨 Wind: {row['Installed_Wind_KW']} kW"
+            if row.get('Installed_BESS_kWh',0) > 0: txt += f"<br>🔋 BESS: {row['Installed_BESS_kWh']} kWh"
+
+        # Prioritization Colors
+        if "LifeSafety" in str(cls) or "Class 1" in str(cls):
+            node_colors.append('#d62728')  # Red
+            node_sizes.append(14)
+        elif sens >= 3.0:
+            node_colors.append('#ff7f0e')  # Orange
+            node_sizes.append(10)
+        elif is_der:
+            node_colors.append('#2ca02c')  # Green
+            node_sizes.append(12)
+        else:
+            node_colors.append('#1f77b4')  # Blue
+            node_sizes.append(6)
+            
+        node_text.append(txt)
+
+    fig.add_trace(go.Scatter(
+        x=map_nodes_df["X"], y=map_nodes_df["Y"],
+        mode='markers', hoverinfo='text', text=node_text,
+        marker=dict(showscale=False, color=node_colors, size=node_sizes, line_width=1, line_color='black'),
+        name='Grid Nodes (Priorities)'
+    ), row=1, col=1)
+
+    # Substation
+    if not map_nodes_df.empty:
+        substation = map_nodes_df.iloc[0]
+        fig.add_trace(go.Scatter(x=[substation["X"]], y=[substation["Y"]], mode='markers',
+                                 marker=dict(symbol='star', size=18, color='gold', line=dict(width=2, color='black')),
+                                 name='Main Substation', hovertext="Main Substation"), row=1, col=1)
+
+    # Grid Loss Annotation
+    event_mask = network_case.get("grid_availability_profile", np.ones(horizon)) == 0
+    if event_mask.any():
+        fig.add_annotation(
+            x=0.5, y=0.95, xref="x domain", yref="y domain",
+            text="⚠️ EVENT: MAIN SUBSTATION LOSS DETECTED ⚠️",
+            showarrow=False,
+            font=dict(family="Arial", size=14, color="white"),
+            bgcolor="rgba(255, 0, 0, 0.8)",
+            bordercolor="darkred", borderwidth=2, borderpad=4,
+            row=1, col=1
+        )
 
     # --- PLOT 2: IEEE 1366 Table ---
     fig.add_trace(go.Table(
@@ -1874,37 +1930,30 @@ def visualize_interactive_dashboard(network_case, opt_output, metrics_output):
     bess_charge = np.where(sys_ts["BatteryDispatchKW"] < 0, np.abs(sys_ts["BatteryDispatchKW"]), 0)
     bess_discharge = np.maximum(0, sys_ts["BatteryDispatchKW"])
     
-    # Bars (barmode='relative' stacks them automatically in the layout)
     fig.add_trace(go.Bar(x=time_axis, y=sys_ts["GridImportKW"], name="Grid Import", marker_color='gray'), row=4, col=1)
     fig.add_trace(go.Bar(x=time_axis, y=sys_ts["PVGenerationKW"], name="PV Gen", marker_color='gold'), row=4, col=1)
     fig.add_trace(go.Bar(x=time_axis, y=sys_ts["WindGenerationKW"], name="Wind Gen", marker_color='lightblue'), row=4, col=1)
     fig.add_trace(go.Bar(x=time_axis, y=bess_discharge, name="BESS Discharge", marker_color='lightgreen'), row=4, col=1)
-    
-    # Negative Bar for BESS Charge
     fig.add_trace(go.Bar(x=time_axis, y=-bess_charge, name="BESS Charge", marker_color='darkgreen'), row=4, col=1)
     
-    # Continuous line for Demand
     fig.add_trace(go.Scatter(x=time_axis, y=sys_ts["TotalLoadKW"], name="Total Demand", mode='lines', line=dict(color='black', width=2)), row=4, col=1)
-    
-    # SOC on Secondary Y-Axis
     fig.add_trace(go.Scatter(x=time_axis, y=soc_pct, name="Battery SOC (%)", mode='lines', line=dict(color='purple', width=2)), row=4, col=1, secondary_y=True)
 
-    # Shading the event area on ENS and Dispatch
-    event_mask = network_case.get("grid_availability_profile", np.ones(horizon)) == 0
+    # CORREÇÃO DO FUNDO VERMELHO: O sombreamento agora é aplicado estritamente aos gráficos inferiores
     if event_mask.any():
         event_starts = res_ts.index[event_mask & ~pd.Series(event_mask).shift(1).fillna(False)].tolist()
         event_ends = res_ts.index[event_mask & ~pd.Series(event_mask).shift(-1).fillna(False)].tolist()
         for s, e in zip(event_starts, event_ends):
-            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x3", yref="paper", fillcolor="red", opacity=0.1, line_width=0)
-            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x4", yref="paper", fillcolor="red", opacity=0.1, line_width=0)
-            fig.add_annotation(x=s, y=0.95, xref="x3", yref="paper", text="Grid Event", showarrow=False, xanchor="left", font=dict(color="red"))
+            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x3", yref="y3 domain", fillcolor="red", opacity=0.1, line_width=0)
+            fig.add_shape(type="rect", x0=s, x1=e, y0=0, y1=1, xref="x4", yref="y4 domain", fillcolor="red", opacity=0.1, line_width=0)
+            fig.add_annotation(x=s, y=0.95, xref="x3", yref="y3 domain", text="Grid Event", showarrow=False, xanchor="left", font=dict(color="red"))
 
     # Formatting
     fig.update_layout(
         title_text="Microgrid Planning, Reliability & Resilience Dashboard", 
         height=1400, 
         template="plotly_white",
-        barmode='relative', # Stacks bars (positive goes up, negative goes down)
+        barmode='relative',
         hovermode="x unified"
     )
     
