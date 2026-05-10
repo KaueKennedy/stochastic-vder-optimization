@@ -1185,6 +1185,7 @@ def configure_events_interactively():
         
     print("--------------------------------------------------\n")
     return cfg
+
 def apply_event(network_case, event_config=None):
     """
     Modifica diretamente o dicionario 'network_case' para simular danos 
